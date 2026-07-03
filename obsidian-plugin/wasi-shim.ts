@@ -12,7 +12,7 @@ interface VfsNode { children: Map<string, VfsNode>; content: Uint8Array | null; 
 
 class Vfs {
   root = new Map<string, VfsNode>();
-  private parts(p: string): string[] { return p.split("/").filter(x => x.length > 0); }
+  private parts(p: string): string[] { return p.split("/").filter(x => x.length > 0 && x !== "."); }
   resolve(p: string): VfsNode | null {
     const parts = this.parts(p);
     let children = this.root;
@@ -41,7 +41,7 @@ class Vfs {
   }
   mkdir(p: string): boolean {
     const parts = this.parts(p);
-    if (parts.length === 0) return false;
+    if (parts.length === 0) return true;
     const name = parts.pop()!;
     let children = this.root;
     for (const part of parts) {
@@ -49,7 +49,10 @@ class Vfs {
       if (!n) { n = { children: new Map(), content: null }; children.set(part, n); }
       children = n.children;
     }
-    if (children.has(name)) return false;
+    if (children.has(name)) {
+      const existing = children.get(name)!;
+      return existing.content === null;
+    }
     children.set(name, { children: new Map(), content: null });
     return true;
   }
@@ -222,6 +225,20 @@ export async function runNullclaw(
     },
     fd_pwrite(fd: number, iovs: number, iovsLen: number, offset: number, nwritten: number): number {
       const v = dv(); let total = 0;
+      // Zig's WASI stdout/stderr writer may use pwrite on fd=1/2.
+      // Treat fd=1/2 exactly like fd_write and ignore offset.
+      if (fd === 1 || fd === 2) {
+        for (let i = 0; i < iovsLen; i++) {
+          const bp = v.getUint32(iovs + i * 8, true);
+          const bl = v.getUint32(iovs + i * 8 + 4, true);
+          const bytes = new Uint8Array(_mem.buffer, bp, bl);
+          total += bl;
+          if (fd === 1) _stdout.push(bytes.slice());
+          else _stderr.push(bytes.slice());
+        }
+        v.setUint32(nwritten, total, true);
+        return 0;
+      }
       const file = _fds.get(fd);
       if (!file?.writable) return 8;
       for (let i = 0; i < iovsLen; i++) {
@@ -266,7 +283,7 @@ export async function runNullclaw(
     fd_fdstat_get(fd: number, buf: number): number {
       const v = dv();
       v.setUint8(buf, fd === 3 ? FT_DIR : FT_REG);
-      v.setBigUint64(buf + 8, fd === 3 ? 0xFFFFFFFFFFFFFFFFn : BigInt(0x3F), true);
+      v.setBigUint64(buf + 8, 0xFFFFFFFFFFFFFFFFn, true);
       v.setBigUint64(buf + 16, 0n, true);
       return 0;
     },
@@ -301,14 +318,18 @@ export async function runNullclaw(
       const full = path.startsWith("/") ? path : "/" + path;
       const wantCreate = (oflags & 1) !== 0;
       const wantTrunc = (oflags & 8) !== 0;
+      // rightsBase is i64 BigInt in JS. WASI FD_WRITE = 1<<6, FD_ALLOCATE = 1<<8,
+      // PATH_FILESTAT_SET_SIZE = 1<<19, FD_FILESTAT_SET_SIZE = 1<<22.
+      const rights = BigInt(rightsBase);
+      const wantsWrite = (rights & (1n << 6n)) !== 0n || (rights & (1n << 8n)) !== 0n || (rights & (1n << 19n)) !== 0n || (rights & (1n << 22n)) !== 0n;
       let content = _vfs.read(full);
       if (!content) {
-        if (wantCreate) { _vfs.write(full, new Uint8Array(0)); content = new Uint8Array(0); }
+        if (wantCreate || wantsWrite) { _vfs.write(full, new Uint8Array(0)); content = new Uint8Array(0); }
         else { return 44; }
       }
       if (wantTrunc) content = new Uint8Array(0);
       const fd = _nextFd++;
-      _fds.set(fd, { path: full, content: content.slice(), offset: 0, writable: wantCreate || wantTrunc, ftype: FT_REG });
+      _fds.set(fd, { path: full, content: content.slice(), offset: 0, writable: wantCreate || wantTrunc || wantsWrite, ftype: FT_REG });
       v.setUint32(fdOut, fd, true);
       return 0;
     },

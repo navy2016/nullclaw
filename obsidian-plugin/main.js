@@ -32,7 +32,7 @@ var Vfs = class {
     this.root = /* @__PURE__ */ new Map();
   }
   parts(p) {
-    return p.split("/").filter((x) => x.length > 0);
+    return p.split("/").filter((x) => x.length > 0 && x !== ".");
   }
   resolve(p) {
     const parts = this.parts(p);
@@ -69,7 +69,7 @@ var Vfs = class {
   }
   mkdir(p) {
     const parts = this.parts(p);
-    if (parts.length === 0) return false;
+    if (parts.length === 0) return true;
     const name = parts.pop();
     let children = this.root;
     for (const part of parts) {
@@ -80,7 +80,10 @@ var Vfs = class {
       }
       children = n.children;
     }
-    if (children.has(name)) return false;
+    if (children.has(name)) {
+      const existing = children.get(name);
+      return existing.content === null;
+    }
     children.set(name, { children: /* @__PURE__ */ new Map(), content: null });
     return true;
   }
@@ -271,6 +274,18 @@ async function runNullclaw(wasmBytes, args, config, uiCallback) {
     fd_pwrite(fd, iovs, iovsLen, offset, nwritten) {
       const v = dv();
       let total = 0;
+      if (fd === 1 || fd === 2) {
+        for (let i = 0; i < iovsLen; i++) {
+          const bp = v.getUint32(iovs + i * 8, true);
+          const bl = v.getUint32(iovs + i * 8 + 4, true);
+          const bytes = new Uint8Array(_mem.buffer, bp, bl);
+          total += bl;
+          if (fd === 1) _stdout.push(bytes.slice());
+          else _stderr.push(bytes.slice());
+        }
+        v.setUint32(nwritten, total, true);
+        return 0;
+      }
       const file = _fds.get(fd);
       if (!file?.writable) return 8;
       for (let i = 0; i < iovsLen; i++) {
@@ -326,7 +341,7 @@ async function runNullclaw(wasmBytes, args, config, uiCallback) {
     fd_fdstat_get(fd, buf) {
       const v = dv();
       v.setUint8(buf, fd === 3 ? FT_DIR : FT_REG);
-      v.setBigUint64(buf + 8, fd === 3 ? 0xFFFFFFFFFFFFFFFFn : BigInt(63), true);
+      v.setBigUint64(buf + 8, 0xFFFFFFFFFFFFFFFFn, true);
       v.setBigUint64(buf + 16, 0n, true);
       return 0;
     },
@@ -366,9 +381,11 @@ async function runNullclaw(wasmBytes, args, config, uiCallback) {
       const full = path.startsWith("/") ? path : "/" + path;
       const wantCreate = (oflags & 1) !== 0;
       const wantTrunc = (oflags & 8) !== 0;
+      const rights = BigInt(rightsBase);
+      const wantsWrite = (rights & 1n << 6n) !== 0n || (rights & 1n << 8n) !== 0n || (rights & 1n << 19n) !== 0n || (rights & 1n << 22n) !== 0n;
       let content = _vfs.read(full);
       if (!content) {
-        if (wantCreate) {
+        if (wantCreate || wantsWrite) {
           _vfs.write(full, new Uint8Array(0));
           content = new Uint8Array(0);
         } else {
@@ -377,7 +394,7 @@ async function runNullclaw(wasmBytes, args, config, uiCallback) {
       }
       if (wantTrunc) content = new Uint8Array(0);
       const fd = _nextFd++;
-      _fds.set(fd, { path: full, content: content.slice(), offset: 0, writable: wantCreate || wantTrunc, ftype: FT_REG });
+      _fds.set(fd, { path: full, content: content.slice(), offset: 0, writable: wantCreate || wantTrunc || wantsWrite, ftype: FT_REG });
       v.setUint32(fdOut, fd, true);
       return 0;
     },
