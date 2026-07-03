@@ -110,3 +110,30 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
+
+/* Mobile keyboard/layout fixes */
+.nullclaw-terminal {
+  min-height: 0;
+  overflow: hidden;
+}
+.nullclaw-output {
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+.nullclaw-input-row {
+  flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
+  background: var(--background-primary);
+  z-index: 5;
+}
+.nullclaw-status {
+  flex-shrink: 0;
+  background: var(--background-primary);
+}
+body.is-mobile .nullclaw-terminal {
+  height: 100dvh;
+}
+body.is-mobile .nullclaw-input {
+  font-size: 16px; /* avoid Android WebView zoom/jump */
+}

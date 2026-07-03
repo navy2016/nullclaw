@@ -23,6 +23,8 @@ class NullclawView extends ItemView {
   private wasmBytes: ArrayBuffer | null = null;
   private running = false;
   private settings: NullClawSettings;
+  private messages: Array<{ role: 'system' | 'user' | 'assistant' | 'tool'; content: string; name?: string; tool_call_id?: string }> = [];
+  private viewportResizeHandler?: () => void;
 
   constructor(leaf: WorkspaceLeaf, settings: NullClawSettings) {
     super(leaf);
@@ -50,6 +52,7 @@ class NullclawView extends ItemView {
     this.inputEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !this.running) this.exec(this.inputEl.value);
     });
+    this.setupMobileViewport(c);
     setTimeout(() => this.inputEl.focus(), 200);
   }
 
@@ -110,13 +113,56 @@ class NullclawView extends ItemView {
 
   private async execSlashCommand(command: string) {
     if (!command) {
-      this.println('Slash commands: /help /version /status /memory list /memory add <key> <value> /identity show', 'nc-info');
+      this.println('Slash commands: /help /version /status /memory list /read <path> /write <path> <content> /append <path> <content> /insert <path> <marker> <content> /search <query> /list [folder] /clear', 'nc-info');
       return;
     }
 
-    // Compatibility: /agent -m hello still works, but we route it through direct chat.
     const args = this.parseArgs(command);
-    if (args[0] === 'agent') {
+    const cmd = args[0];
+
+    // Chat/session commands
+    if (cmd === 'clear') {
+      this.messages = [];
+      this.println('Context cleared.', 'nc-info');
+      return;
+    }
+
+    // Vault tools as slash commands
+    if (cmd === 'read') {
+      if (!args[1]) return this.println('Usage: /read <path>', 'nc-error');
+      this.println(await this.toolRead(args[1]), 'nc-output');
+      return;
+    }
+    if (cmd === 'write') {
+      if (!args[1] || args.length < 3) return this.println('Usage: /write <path> <content>', 'nc-error');
+      await this.toolWrite(args[1], args.slice(2).join(' '));
+      this.println(`Wrote ${args[1]}`, 'nc-output');
+      return;
+    }
+    if (cmd === 'append') {
+      if (!args[1] || args.length < 3) return this.println('Usage: /append <path> <content>', 'nc-error');
+      await this.toolAppend(args[1], args.slice(2).join(' '));
+      this.println(`Appended to ${args[1]}`, 'nc-output');
+      return;
+    }
+    if (cmd === 'insert') {
+      if (!args[1] || !args[2] || args.length < 4) return this.println('Usage: /insert <path> <marker> <content>', 'nc-error');
+      await this.toolInsert(args[1], args[2], args.slice(3).join(' '));
+      this.println(`Inserted into ${args[1]}`, 'nc-output');
+      return;
+    }
+    if (cmd === 'search') {
+      if (args.length < 2) return this.println('Usage: /search <query>', 'nc-error');
+      this.println(await this.toolSearch(args.slice(1).join(' ')), 'nc-output');
+      return;
+    }
+    if (cmd === 'list') {
+      this.println(await this.toolList(args[1] ?? ''), 'nc-output');
+      return;
+    }
+
+    // Compatibility: /agent -m hello still works, routed through direct chat.
+    if (cmd === 'agent') {
       let message = '';
       const mIdx = args.indexOf('-m');
       const mIdx2 = args.indexOf('--message');
@@ -131,6 +177,7 @@ class NullclawView extends ItemView {
       return;
     }
 
+    // Local WASI commands: /version /help /status /memory ... /identity ...
     const result = await runNullclaw(
       this.wasmBytes!,
       args,
@@ -166,39 +213,191 @@ class NullclawView extends ItemView {
 
   private async callLLM(message: string): Promise<string | null> {
     const base = (this.settings.apiBase || 'https://api.openai.com/v1').replace(/\/$/, '');
-    const body = JSON.stringify({
-      model: this.settings.model || 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: 'You are NullClaw, an AI assistant running inside Obsidian Android. Be concise, practical, and answer in the user language. Use markdown when useful.' },
-        { role: 'user', content: message },
-      ],
-      max_tokens: 2048,
-      temperature: 0.7,
-    });
+    const system = {
+      role: 'system' as const,
+      content: 'You are NullClaw, an AI assistant embedded in Obsidian Android. Maintain context across turns. You can use tools to read, write, append, insert, list and search the current Obsidian vault. Use tools when the user asks about notes/files or wants modifications. Be concise and answer in the user language.'
+    };
+
+    const history = this.messages.slice(-20);
+    const requestMessages: any[] = [system, ...history, { role: 'user', content: message }];
+
+    const tools = this.toolSchemas();
 
     try {
-      const res = await fetch(`${base}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.settings.apiKey}`,
-          'Content-Type': 'application/json',
-          // OpenRouter accepts these optional headers; other providers ignore them.
-          'HTTP-Referer': 'app://obsidian-nullclaw',
-          'X-Title': 'NullClaw Obsidian',
-        },
-        body,
-      });
-      const text = await res.text();
-      if (!res.ok) {
-        this.println(`[LLM ${res.status}] ${text.slice(0, 500)}`, 'nc-error');
-        return null;
+      const first = await this.chatCompletion(base, requestMessages, tools);
+      const msg = first.choices?.[0]?.message;
+      if (!msg) return null;
+
+      // Tool calling path. Supports OpenAI/OpenRouter-compatible tool_calls.
+      if (msg.tool_calls?.length) {
+        const toolMessages: any[] = [...requestMessages, msg];
+        for (const call of msg.tool_calls) {
+          const toolName = call.function?.name;
+          const argsRaw = call.function?.arguments || '{}';
+          let parsed: any = {};
+          try { parsed = JSON.parse(argsRaw); } catch { parsed = {}; }
+          const result = await this.executeTool(toolName, parsed);
+          toolMessages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            name: toolName,
+            content: result,
+          });
+        }
+        const second = await this.chatCompletion(base, toolMessages, tools);
+        const finalText = second.choices?.[0]?.message?.content ?? '';
+        this.remember(message, finalText);
+        return finalText || null;
       }
-      const data = JSON.parse(text);
-      return data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? text;
+
+      const text = msg.content ?? first.choices?.[0]?.text ?? '';
+      this.remember(message, text);
+      return text || null;
     } catch (e: any) {
       this.println(`[LLM fetch failed] ${e.message}`, 'nc-error');
       return null;
     }
+  }
+
+  private async chatCompletion(base: string, messages: any[], tools: any[]): Promise<any> {
+    const body: any = {
+      model: this.settings.model || 'gpt-4o-mini',
+      messages,
+      max_tokens: 2048,
+      temperature: 0.7,
+    };
+    if (tools.length) body.tools = tools;
+
+    const res = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.settings.apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'app://obsidian-nullclaw',
+        'X-Title': 'NullClaw Obsidian',
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`${res.status} ${text.slice(0, 500)}`);
+    return JSON.parse(text);
+  }
+
+  private remember(user: string, assistant: string) {
+    this.messages.push({ role: 'user', content: user });
+    this.messages.push({ role: 'assistant', content: assistant });
+    if (this.messages.length > 40) this.messages = this.messages.slice(-40);
+  }
+
+  private toolSchemas(): any[] {
+    return [
+      { type: 'function', function: { name: 'vault_search', description: 'Search markdown files in the Obsidian vault.', parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'number' } }, required: ['query'] } } },
+      { type: 'function', function: { name: 'vault_read', description: 'Read a file from the Obsidian vault.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
+      { type: 'function', function: { name: 'vault_write', description: 'Overwrite/create a file in the Obsidian vault.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
+      { type: 'function', function: { name: 'vault_append', description: 'Append content to a vault file.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
+      { type: 'function', function: { name: 'vault_insert', description: 'Insert content before/after a marker in a vault file.', parameters: { type: 'object', properties: { path: { type: 'string' }, marker: { type: 'string' }, content: { type: 'string' }, position: { type: 'string', enum: ['before', 'after'] } }, required: ['path', 'marker', 'content'] } } },
+      { type: 'function', function: { name: 'vault_list', description: 'List files under a vault folder.', parameters: { type: 'object', properties: { folder: { type: 'string' }, limit: { type: 'number' } } } } },
+    ];
+  }
+
+  private async executeTool(name: string, args: any): Promise<string> {
+    try {
+      if (name === 'vault_search') return await this.toolSearch(String(args.query ?? ''), Number(args.limit ?? 20));
+      if (name === 'vault_read') return await this.toolRead(String(args.path ?? ''));
+      if (name === 'vault_write') { await this.toolWrite(String(args.path ?? ''), String(args.content ?? '')); return `Wrote ${args.path}`; }
+      if (name === 'vault_append') { await this.toolAppend(String(args.path ?? ''), String(args.content ?? '')); return `Appended to ${args.path}`; }
+      if (name === 'vault_insert') { await this.toolInsert(String(args.path ?? ''), String(args.marker ?? ''), String(args.content ?? ''), String(args.position ?? 'after') as any); return `Inserted into ${args.path}`; }
+      if (name === 'vault_list') return await this.toolList(String(args.folder ?? ''), Number(args.limit ?? 100));
+      return `Unknown tool: ${name}`;
+    } catch (e: any) {
+      return `Tool error (${name}): ${e.message}`;
+    }
+  }
+
+  private normalizePath(path: string): string {
+    return path.replace(/^\/+/, '').trim();
+  }
+
+  private async toolRead(path: string): Promise<string> {
+    const p = this.normalizePath(path);
+    if (!p) throw new Error('Missing path');
+    return await this.app.vault.adapter.read(p);
+  }
+
+  private async toolWrite(path: string, content: string) {
+    const p = this.normalizePath(path);
+    if (!p) throw new Error('Missing path');
+    await this.ensureParentFolder(p);
+    await this.app.vault.adapter.write(p, content);
+  }
+
+  private async toolAppend(path: string, content: string) {
+    const p = this.normalizePath(path);
+    if (!p) throw new Error('Missing path');
+    let old = '';
+    if (await this.app.vault.adapter.exists(p)) old = await this.app.vault.adapter.read(p);
+    await this.toolWrite(p, old + (old.endsWith('\n') || old.length === 0 ? '' : '\n') + content);
+  }
+
+  private async toolInsert(path: string, marker: string, content: string, position: 'before' | 'after' = 'after') {
+    const p = this.normalizePath(path);
+    const old = await this.toolRead(p);
+    const idx = old.indexOf(marker);
+    if (idx < 0) throw new Error(`Marker not found: ${marker}`);
+    const insertAt = position === 'before' ? idx : idx + marker.length;
+    await this.toolWrite(p, old.slice(0, insertAt) + content + old.slice(insertAt));
+  }
+
+  private async toolSearch(query: string, limit = 20): Promise<string> {
+    const q = query.toLowerCase();
+    if (!q) throw new Error('Missing query');
+    const files = this.app.vault.getMarkdownFiles();
+    const hits: string[] = [];
+    for (const file of files) {
+      if (hits.length >= limit) break;
+      const text = await this.app.vault.cachedRead(file);
+      const lower = text.toLowerCase();
+      const idx = lower.indexOf(q);
+      if (idx >= 0 || file.path.toLowerCase().includes(q)) {
+        const start = Math.max(0, idx - 80);
+        const end = idx >= 0 ? Math.min(text.length, idx + q.length + 160) : 160;
+        const snippet = idx >= 0 ? text.slice(start, end).replace(/\s+/g, ' ') : '(path match)';
+        hits.push(`- ${file.path}: ${snippet}`);
+      }
+    }
+    return hits.length ? hits.join('\n') : 'No matches.';
+  }
+
+  private async toolList(folder = '', limit = 100): Promise<string> {
+    const prefix = this.normalizePath(folder);
+    const files = this.app.vault.getFiles().filter((f: any) => !prefix || f.path.startsWith(prefix));
+    return files.slice(0, limit).map((f: any) => `- ${f.path}`).join('\n') || 'No files.';
+  }
+
+  private async ensureParentFolder(path: string) {
+    const parts = path.split('/');
+    parts.pop();
+    let cur = '';
+    for (const part of parts) {
+      cur = cur ? `${cur}/${part}` : part;
+      if (!(await this.app.vault.adapter.exists(cur))) await this.app.vault.adapter.mkdir(cur);
+    }
+  }
+
+  private setupMobileViewport(container: HTMLElement) {
+    const apply = () => {
+      const vv = window.visualViewport;
+      if (vv) {
+        container.style.height = Math.max(260, vv.height - container.getBoundingClientRect().top - 4) + 'px';
+      } else {
+        container.style.height = '100%';
+      }
+    };
+    this.viewportResizeHandler = apply;
+    window.visualViewport?.addEventListener('resize', apply);
+    window.visualViewport?.addEventListener('scroll', apply);
+    window.addEventListener('resize', apply);
+    setTimeout(apply, 50);
   }
 
   private parseArgs(input: string): string[] {
@@ -218,7 +417,13 @@ class NullclawView extends ItemView {
     this.outputEl.scrollTop = this.outputEl.scrollHeight;
   }
 
-  async onClose() {}
+  async onClose() {
+    if (this.viewportResizeHandler) {
+      window.visualViewport?.removeEventListener('resize', this.viewportResizeHandler);
+      window.visualViewport?.removeEventListener('scroll', this.viewportResizeHandler);
+      window.removeEventListener('resize', this.viewportResizeHandler);
+    }
+  }
 }
 
 class NullClawSettingTab extends PluginSettingTab {
