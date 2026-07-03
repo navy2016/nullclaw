@@ -110,9 +110,6 @@ var _nextFd = 4;
 var _config = { apiKey: "", apiBase: "https://api.openai.com/v1", model: "gpt-4o-mini" };
 var _uiCallback = null;
 var _prefetched = /* @__PURE__ */ new Map();
-function prefetchLLM(key, response) {
-  _prefetched.set(key, response);
-}
 function dv() {
   return new DataView(_mem.buffer);
 }
@@ -523,7 +520,7 @@ var NullclawView = class extends import_obsidian.ItemView {
     this.outputEl = c.createDiv({ cls: "nullclaw-output" });
     const row = c.createDiv({ cls: "nullclaw-input-row" });
     row.createSpan({ cls: "nullclaw-input-prompt", text: "\u276F" });
-    this.inputEl = row.createEl("input", { cls: "nullclaw-input", attr: { type: "text", placeholder: 'version | help | agent -m "hello" | memory list ...' } });
+    this.inputEl = row.createEl("input", { cls: "nullclaw-input", attr: { type: "text", placeholder: "\u76F4\u63A5\u8F93\u5165\u53D1\u7ED9 AI\uFF1B\u547D\u4EE4\u7528 /help /version /memory list ..." } });
     const st = c.createDiv({ cls: "nullclaw-status" });
     this.statusDot = st.createSpan({ cls: "nc-dot nc-dot-error" });
     this.statusText = st.createSpan({ text: "Loading nullclaw.wasm..." });
@@ -546,13 +543,13 @@ var NullclawView = class extends import_obsidian.ItemView {
       this.statusDot.className = "nc-dot nc-dot-ready";
       if (this.settings.apiKey) {
         this.statusText.textContent = `NullClaw ready (${sizeKB} KB, LLM: ${this.settings.model})`;
-        this.println("Welcome to NullClaw \u2014 AI agent with LLM bridge.", "nc-info");
+        this.println("Welcome to NullClaw \u2014 direct chat mode. Type messages directly; use / for commands.", "nc-info");
       } else {
         this.statusText.textContent = `NullClaw ready (${sizeKB} KB, local mode \u2014 set API key in settings)`;
-        this.println("Welcome to NullClaw \u2014 local agent (no LLM configured).", "nc-info");
+        this.println("Welcome to NullClaw \u2014 local mode. Type messages directly; use / for commands.", "nc-info");
         this.println("Go to Settings \u2192 NullClaw to set your API key for LLM mode.", "nc-info");
       }
-      this.println('Commands: version, help, agent -m "message", memory add/list/search, identity show/set', "nc-info");
+      this.println("Commands: /version, /help, /status, /memory list, /memory add key value, /identity show", "nc-info");
       this.println("", "nc-info");
     } catch (e) {
       this.statusDot.className = "nc-dot nc-dot-error";
@@ -561,28 +558,20 @@ var NullclawView = class extends import_obsidian.ItemView {
     }
   }
   async exec(input) {
-    if (!input.trim() || !this.wasmBytes) return;
+    const raw = input.trim();
+    if (!raw || !this.wasmBytes) return;
     this.running = true;
     this.statusDot.className = "nc-dot nc-dot-running";
     this.statusText.textContent = "Running...";
-    this.println(`\u276F ${input}`, "nc-prompt");
+    this.println(`\u276F ${raw}`, "nc-prompt");
     this.inputEl.value = "";
     this.inputEl.disabled = true;
     try {
-      const args = this.parseArgs(input);
-      const isAgent = args[0] === "agent" && this.settings.apiKey;
-      if (isAgent) {
-        await this.prefetchAgentResponse(input, args);
+      if (raw.startsWith("/")) {
+        await this.execSlashCommand(raw.slice(1).trim());
+      } else {
+        await this.execChatMessage(raw);
       }
-      const result = await runNullclaw(
-        this.wasmBytes,
-        args,
-        this.settings,
-        (text) => this.println(text, "nc-info")
-      );
-      if (result.stdout) this.println(result.stdout, "nc-output");
-      if (result.stderr) this.println(result.stderr, "nc-error");
-      if (!result.stdout && !result.stderr) this.println(`(exit: ${result.exitCode})`, "nc-info");
     } catch (e) {
       this.println(`Error: ${e.message}`, "nc-error");
     } finally {
@@ -593,44 +582,88 @@ var NullclawView = class extends import_obsidian.ItemView {
       this.inputEl.focus();
     }
   }
-  async prefetchAgentResponse(input, args) {
-    let message = "";
-    const mIdx = args.indexOf("-m");
-    const mIdx2 = args.indexOf("--message");
-    if (mIdx >= 0 && mIdx + 1 < args.length) message = args.slice(mIdx + 1).join(" ");
-    else if (mIdx2 >= 0 && mIdx2 + 1 < args.length) message = args.slice(mIdx2 + 1).join(" ");
-    if (!message) return;
+  async execSlashCommand(command) {
+    if (!command) {
+      this.println("Slash commands: /help /version /status /memory list /memory add <key> <value> /identity show", "nc-info");
+      return;
+    }
+    const args = this.parseArgs(command);
+    if (args[0] === "agent") {
+      let message = "";
+      const mIdx = args.indexOf("-m");
+      const mIdx2 = args.indexOf("--message");
+      if (mIdx >= 0 && mIdx + 1 < args.length) message = args.slice(mIdx + 1).join(" ");
+      else if (mIdx2 >= 0 && mIdx2 + 1 < args.length) message = args.slice(mIdx2 + 1).join(" ");
+      else message = args.slice(1).join(" ");
+      if (!message) {
+        this.println('Usage: /agent -m "message" \u6216\u76F4\u63A5\u8F93\u5165 message', "nc-error");
+        return;
+      }
+      await this.execChatMessage(message);
+      return;
+    }
+    const result = await runNullclaw(
+      this.wasmBytes,
+      args,
+      this.settings,
+      (text) => this.println(text, "nc-info")
+    );
+    if (result.stdout) this.println(result.stdout, "nc-output");
+    if (result.stderr) this.println(result.stderr, "nc-error");
+    if (!result.stdout && !result.stderr) this.println(`(exit: ${result.exitCode})`, "nc-info");
+  }
+  async execChatMessage(message) {
+    if (this.settings.apiKey) {
+      const reply = await this.callLLM(message);
+      if (reply) {
+        this.println(reply, "nc-output");
+        return;
+      }
+      this.println("[LLM call failed, falling back to local mode]", "nc-info");
+    }
+    const result = await runNullclaw(
+      this.wasmBytes,
+      ["agent", "-m", message],
+      this.settings,
+      (text) => this.println(text, "nc-info")
+    );
+    if (result.stdout) this.println(result.stdout, "nc-output");
+    if (result.stderr) this.println(result.stderr, "nc-error");
+    if (!result.stdout && !result.stderr) this.println(`(exit: ${result.exitCode})`, "nc-info");
+  }
+  async callLLM(message) {
+    const base = (this.settings.apiBase || "https://api.openai.com/v1").replace(/\/$/, "");
     const body = JSON.stringify({
-      model: this.settings.model,
+      model: this.settings.model || "gpt-4o-mini",
       messages: [
-        { role: "system", content: "You are NullClaw WASI, an AI assistant running inside Obsidian. Be concise and helpful. Answer in markdown." },
+        { role: "system", content: "You are NullClaw, an AI assistant running inside Obsidian Android. Be concise, practical, and answer in the user language. Use markdown when useful." },
         { role: "user", content: message }
       ],
       max_tokens: 2048,
       temperature: 0.7
     });
-    const url = `${this.settings.apiBase}/chat/completions`;
     try {
-      const res = await fetch(url, {
+      const res = await fetch(`${base}/chat/completions`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${this.settings.apiKey}`,
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          // OpenRouter accepts these optional headers; other providers ignore them.
+          "HTTP-Referer": "app://obsidian-nullclaw",
+          "X-Title": "NullClaw Obsidian"
         },
         body
       });
+      const text = await res.text();
       if (!res.ok) {
-        const errText = await res.text();
-        this.println(`[LLM error: ${res.status} ${errText.slice(0, 200)}]`, "nc-error");
-        return;
+        this.println(`[LLM ${res.status}] ${text.slice(0, 500)}`, "nc-error");
+        return null;
       }
-      const data = await res.json();
-      const content = data.choices?.[0]?.message?.content ?? "";
-      if (content) {
-        prefetchLLM(url + "||" + body, JSON.stringify(data));
-      }
+      const data = JSON.parse(text);
+      return data.choices?.[0]?.message?.content ?? data.choices?.[0]?.text ?? text;
     } catch (e) {
-      this.println(`[LLM fetch failed: ${e.message}]`, "nc-error");
+      this.println(`[LLM fetch failed] ${e.message}`, "nc-error");
+      return null;
     }
   }
   parseArgs(input) {
