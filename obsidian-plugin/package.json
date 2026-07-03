@@ -1,0 +1,17 @@
+{
+  "name": "nullclaw-obsidian",
+  "version": "0.1.0",
+  "description": "Embedded AI agent powered by NullClaw WASM",
+  "main": "main.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "obsidian": "^1.13.1"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "nullclaw-obsidian",
+  "name": "NullClaw",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Embedded AI agent powered by NullClaw WASM — runs entirely inside Obsidian, no Termux required.",
+  "author": "navy2016",
+  "authorUrl": "https://github.com/navy2016",
+  "isDesktopOnly": false
+}

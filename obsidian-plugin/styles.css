@@ -1,0 +1,112 @@
+.nullclaw-terminal {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-family: var(--font-monospace);
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.nullclaw-output {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.nullclaw-output .nc-line {
+  margin-bottom: 2px;
+}
+
+.nullclaw-output .nc-prompt {
+  color: var(--text-accent);
+  font-weight: bold;
+}
+
+.nullclaw-output .nc-output {
+  color: var(--text-normal);
+}
+
+.nullclaw-output .nc-error {
+  color: var(--text-error);
+}
+
+.nullclaw-output .nc-info {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.nullclaw-input-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  gap: 8px;
+}
+
+.nullclaw-input-prompt {
+  color: var(--text-accent);
+  font-weight: bold;
+  font-family: var(--font-monospace);
+  font-size: 14px;
+  user-select: none;
+}
+
+.nullclaw-input {
+  flex: 1;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-normal);
+  padding: 8px 12px;
+  font-family: var(--font-monospace);
+  font-size: 13px;
+  outline: none;
+}
+
+.nullclaw-input:focus {
+  border-color: var(--interactive-accent);
+}
+
+.nullclaw-input::placeholder {
+  color: var(--text-muted);
+}
+
+.nullclaw-status {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--background-modifier-border);
+  display: flex;
+  justify-content: space-between;
+}
+
+.nullclaw-status .nc-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.nullclaw-status .nc-dot-ready {
+  background: #4caf50;
+}
+
+.nullclaw-status .nc-dot-running {
+  background: #ff9800;
+  animation: nc-pulse 1s infinite;
+}
+
+.nullclaw-status .nc-dot-error {
+  background: #f44336;
+}
+
+@keyframes nc-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
