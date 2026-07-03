@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceLeaf, ItemView, Modal, Setting, Notice } from 'obsidian';
+import { Plugin, WorkspaceLeaf, ItemView, Setting, PluginSettingTab } from 'obsidian';
 import { runNullclaw, prefetchLLM, type WasiResult } from './wasi-shim';
 
 const VIEW_TYPE = 'nullclaw-agent-view';
@@ -239,8 +239,6 @@ class NullClawSettingTab extends PluginSettingTab {
   }
 }
 
-// Polyfill for PluginSettingTab (in case obsidian API differs)
-const PluginSettingTab = (window as any).PluginSettingTab || class { constructor(app: any, plugin: any) {} };
 
 export default class NullClawPlugin extends Plugin {
   settings: NullClawSettings = DEFAULT_SETTINGS;
