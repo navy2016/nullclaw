@@ -22,7 +22,7 @@ extern fn host_fetch(
     body_len: usize,
     response_ptr: [*]u8,
     response_max_len: usize,
-) -> usize;
+) usize;
 
 /// Reads a host configuration value (env var equivalent).
 /// Returns the length of the value copied into `out_ptr`, or 0 if not found.
@@ -31,13 +31,13 @@ extern fn host_config_get(
     key_len: usize,
     out_ptr: [*]u8,
     out_max_len: usize,
-) -> usize;
+) usize;
 
 /// Writes text to the Obsidian UI output panel (like printf to the terminal view).
 extern fn host_ui_write(
     text_ptr: [*]const u8,
     text_len: usize,
-) -> void;
+) void;
 
 /// Requests user input from the Obsidian UI.
 /// Blocks until the user provides input; copies it into `out_ptr`.
@@ -47,7 +47,7 @@ extern fn host_ui_read(
     prompt_len: usize,
     out_ptr: [*]u8,
     out_max_len: usize,
-) -> usize;
+) usize;
 
 const is_wasi_target = builtin.target.os.tag == .wasi;
 
