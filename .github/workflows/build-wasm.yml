@@ -1,0 +1,45 @@
+name: Build WASM
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'build.zig'
+      - 'build.zig.zon'
+      - 'vendor/**'
+      - '.github/workflows/build-wasm.yml'
+  workflow_dispatch:
+
+jobs:
+  build-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        run: |
+          curl -L https://ziglang.org/download/0.16.0/zig-linux-x86_64-0.16.0.tar.xz -o zig.tar.xz
+          tar xf zig.tar.xz
+          echo "$PWD/zig-linux-x86_64-0.16.0" >> $GITHUB_PATH
+
+      - name: Verify Zig version
+        run: zig version
+
+      - name: Build nullclaw.wasm (wasm32-wasi)
+        run: |
+          zig build -Doptimize=ReleaseSmall \
+            -Dtarget=wasm32-wasi \
+            -Dchannels=none \
+            -Dengines=none \
+            -Dembedded_wasm3=false \
+            -Dstatic=false
+          ls -lh zig-out/bin/nullclaw.wasm
+
+      - name: Upload wasm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nullclaw-wasm
+          path: zig-out/bin/nullclaw.wasm
+          retention-days: 90
+          if-no-files-found: error
