@@ -1,12 +1,14 @@
-import { Plugin, ItemView, Setting } from 'obsidian';
-import { runNullclaw, prefetchLLM } from './wasi-shim';
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const obsidian_1 = require("obsidian");
+const wasi_shim_1 = require("./wasi-shim");
 const VIEW_TYPE = 'nullclaw-agent-view';
 const DEFAULT_SETTINGS = {
     apiKey: '',
     apiBase: 'https://api.openai.com/v1',
     model: 'gpt-4o-mini',
 };
-class NullclawView extends ItemView {
+class NullclawView extends obsidian_1.ItemView {
     constructor(leaf, settings) {
         super(leaf);
         this.wasmBytes = null;
@@ -80,7 +82,7 @@ class NullclawView extends ItemView {
             if (isAgent) {
                 await this.prefetchAgentResponse(input, args);
             }
-            const result = await runNullclaw(this.wasmBytes, args, this.settings, (text) => this.println(text, 'nc-info'));
+            const result = await (0, wasi_shim_1.runNullclaw)(this.wasmBytes, args, this.settings, (text) => this.println(text, 'nc-info'));
             if (result.stdout)
                 this.println(result.stdout, 'nc-output');
             if (result.stderr)
@@ -139,7 +141,7 @@ class NullclawView extends ItemView {
             const content = data.choices?.[0]?.message?.content ?? '';
             if (content) {
                 // Pre-cache the response keyed by url+body so the wasm sync host_fetch can retrieve it
-                prefetchLLM(url + '||' + body, JSON.stringify(data));
+                (0, wasi_shim_1.prefetchLLM)(url + '||' + body, JSON.stringify(data));
             }
         }
         catch (e) {
@@ -183,7 +185,7 @@ class NullClawSettingTab extends PluginSettingTab {
         containerEl.empty();
         containerEl.createEl('h3', { text: 'NullClaw LLM Configuration' });
         containerEl.createEl('p', { text: 'Configure your LLM provider to enable AI responses. Uses OpenAI-compatible chat completions API.' });
-        new Setting(containerEl)
+        new obsidian_1.Setting(containerEl)
             .setName('API Key')
             .setDesc('Your API key (e.g. sk-... for OpenAI, or your provider key)')
             .addText((text) => {
@@ -192,7 +194,7 @@ class NullClawSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.apiKey)
                 .onChange(async (value) => { this.plugin.settings.apiKey = value; await this.plugin.saveSettings(); });
         });
-        new Setting(containerEl)
+        new obsidian_1.Setting(containerEl)
             .setName('API Base URL')
             .setDesc('OpenAI-compatible endpoint (default: OpenAI)')
             .addText((text) => {
@@ -200,7 +202,7 @@ class NullClawSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.apiBase)
                 .onChange(async (value) => { this.plugin.settings.apiBase = value; await this.plugin.saveSettings(); });
         });
-        new Setting(containerEl)
+        new obsidian_1.Setting(containerEl)
             .setName('Model')
             .setDesc('Model name (default: gpt-4o-mini)')
             .addText((text) => {
@@ -225,7 +227,7 @@ class NullClawSettingTab extends PluginSettingTab {
 const PluginSettingTab = window.PluginSettingTab || class {
     constructor(app, plugin) { }
 };
-export default class NullClawPlugin extends Plugin {
+class NullClawPlugin extends obsidian_1.Plugin {
     constructor() {
         super(...arguments);
         this.settings = DEFAULT_SETTINGS;
@@ -255,3 +257,4 @@ export default class NullClawPlugin extends Plugin {
         ws.revealLeaf(leaf);
     }
 }
+exports.default = NullClawPlugin;
