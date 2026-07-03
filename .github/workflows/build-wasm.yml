@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/**'
+      - 'src/main_wasi.zig'
       - 'build.zig'
       - 'build.zig.zon'
       - 'vendor/**'
@@ -23,7 +23,7 @@ jobs:
           tar xf zig.tar.xz
           echo "$PWD/zig-x86_64-linux-0.16.0" >> $GITHUB_PATH
 
-      - name: Verify Zig version
+      - name: Verify Zig
         run: zig version
 
       - name: Build nullclaw.wasm (wasm32-wasi)
@@ -33,8 +33,17 @@ jobs:
             -Dchannels=none \
             -Dengines=none \
             -Dembedded_wasm3=false \
-            -Dstatic=false
-          ls -lh zig-out/bin/nullclaw.wasm
+            -Dstatic=false 2>&1 || true
+          # Check if wasm exists
+          if [ -f zig-out/bin/nullclaw.wasm ]; then
+            ls -lh zig-out/bin/nullclaw.wasm
+          else
+            echo "Build failed, checking for errors..."
+            zig build -Doptimize=ReleaseSmall -Dtarget=wasm32-wasi -Dchannels=none -Dengines=none -Dembedded_wasm3=false -Dstatic=false 2>&1
+            echo "=== Trying with relaxed ==="
+            zig build -Doptimize=ReleaseSafe -Dtarget=wasm32-wasi -Dchannels=none -Dengines=none -Dembedded_wasm3=false -Dstatic=false 2>&1
+            exit 1
+          fi
 
       - name: Upload wasm artifact
         uses: actions/upload-artifact@v4

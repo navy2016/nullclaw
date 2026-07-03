@@ -4,6 +4,86 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const fs_compat = @import("fs_compat.zig");
 
+// ── Host imports for WASI browser mode ─────────────────────────────────────
+// These functions are provided by the JavaScript WASI shim (Obsidian plugin).
+// They allow nullclaw.wasm to call into the browser's fetch() API for LLM access.
+
+/// Calls the browser's fetch() and returns the response text.
+/// Caller owns the returned slice (allocated via `allocator`).
+/// Returns null on error; check `err_ptr` for details.
+extern fn host_fetch(
+    url_ptr: [*]const u8,
+    url_len: usize,
+    method_ptr: [*]const u8,
+    method_len: usize,
+    headers_ptr: [*]const u8,
+    headers_len: usize,
+    body_ptr: [*]const u8,
+    body_len: usize,
+    response_ptr: [*]u8,
+    response_max_len: usize,
+) -> usize;
+
+/// Reads a host configuration value (env var equivalent).
+/// Returns the length of the value copied into `out_ptr`, or 0 if not found.
+extern fn host_config_get(
+    key_ptr: [*]const u8,
+    key_len: usize,
+    out_ptr: [*]u8,
+    out_max_len: usize,
+) -> usize;
+
+/// Writes text to the Obsidian UI output panel (like printf to the terminal view).
+extern fn host_ui_write(
+    text_ptr: [*]const u8,
+    text_len: usize,
+) -> void;
+
+/// Requests user input from the Obsidian UI.
+/// Blocks until the user provides input; copies it into `out_ptr`.
+/// Returns the length of input copied, or 0 if cancelled.
+extern fn host_ui_read(
+    prompt_ptr: [*]const u8,
+    prompt_len: usize,
+    out_ptr: [*]u8,
+    out_max_len: usize,
+) -> usize;
+
+const is_wasi_target = builtin.target.os.tag == .wasi;
+
+fn getHostConfig(allocator: std.mem.Allocator, key: []const u8) ?[]u8 {
+    if (!is_wasi_target) return null;
+    var buf: [4096]u8 = undefined;
+    const len = host_config_get(key.ptr, key.len, &buf, buf.len);
+    if (len == 0) return null;
+    return allocator.dupe(u8, buf[0..len]) catch null;
+}
+
+fn callHostFetch(allocator: std.mem.Allocator, url: []const u8, method: []const u8, headers: []const u8, body: []const u8) ?[]u8 {
+    if (!is_wasi_target) return null;
+    var response_buf: [65536]u8 = undefined;
+    const len = host_fetch(url.ptr, url.len, method.ptr, method.len, headers.ptr, headers.len, body.ptr, body.len, &response_buf, response_buf.len);
+    if (len == 0) return null;
+    const result = allocator.alloc(u8, len) catch return null;
+    @memcpy(result, response_buf[0..len]);
+    return result;
+}
+
+fn uiWrite(text: []const u8) void {
+    if (is_wasi_target) {
+        host_ui_write(text.ptr, text.len);
+    }
+}
+
+fn uiRead(allocator: std.mem.Allocator, prompt: []const u8) ?[]u8 {
+    if (!is_wasi_target) return null;
+    var buf: [8192]u8 = undefined;
+    const len = host_ui_read(prompt.ptr, prompt.len, &buf, buf.len);
+    if (len == 0) return null;
+    return allocator.dupe(u8, buf[0..len]) catch null;
+}
+
+
 const MAX_READ_BYTES: usize = 1024 * 1024;
 const MAX_SEARCH_MATCHES: usize = 5;
 
@@ -527,6 +607,67 @@ fn run_agent(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const agent_name = extract_agent_name(identity_text);
     const matches = try find_memory_matches(allocator, memory_text, message, 2);
 
+    // ── Try LLM via host_fetch ──────────────────────────────────────────
+    // If host config has an API key and base URL, we call the LLM directly.
+    // Otherwise, fall back to the local memory-based reply.
+    const api_key = getHostConfig(allocator, "NULLCLAW_API_KEY");
+    const api_base = getHostConfig(allocator, "NULLCLAW_API_BASE") orelse
+        allocator.dupe(u8, "https://api.openai.com/v1") catch null;
+    const model = getHostConfig(allocator, "NULLCLAW_MODEL") orelse
+        allocator.dupe(u8, "gpt-4o-mini") catch null;
+
+    if (api_key != null and api_base != null and model != null) {
+        // Build the chat request body
+        const system_prompt = try std.fmt.allocPrint(allocator,
+            "You are {s}, an AI assistant running inside Obsidian via NullClaw WASI. " ++
+            "Be concise and helpful. Answer in markdown.\n\nIdentity:\n{s}\n\nRelevant memories:\n{s}",
+            .{ agent_name, identity_text orelse "", memory_text });
+
+        // Simple JSON construction (no std.json.stringify in WASI minimal mode)
+        // Escape the message and system prompt for JSON
+        const escaped_msg = try jsonEscape(allocator, message);
+        const escaped_sys = try jsonEscape(allocator, system_prompt);
+        const body = try std.fmt.allocPrint(allocator,
+            "{{\"model\":\"{s}\",\"messages\":[{{\"role\":\"system\",\"content\":\"{s}\"}}," ++
+            "{{\"role\":\"user\",\"content\":\"{s}\"}}]," ++
+            "\"max_tokens\":2048,\"temperature\":0.7}}",
+            .{ model.?, escaped_sys, escaped_msg });
+
+        const url = try std.fmt.allocPrint(allocator, "{s}/chat/completions", .{api_base.?});
+        const headers = try std.fmt.allocPrint(allocator, "Authorization: Bearer {s}\nContent-Type: application/json", .{api_key.?});
+
+        uiWrite("[Calling LLM...]");
+        const response = callHostFetch(allocator, url, "POST", headers, body);
+
+        if (response) |resp| {
+            // Extract the content from the OpenAI-format response
+            const reply_text = extractJsonContent(resp) orelse resp;
+            try print_out("{s}\n", .{reply_text});
+            allocator.free(url);
+            allocator.free(headers);
+            allocator.free(body);
+            allocator.free(escaped_msg);
+            allocator.free(escaped_sys);
+            allocator.free(system_prompt);
+            if (response) |r| allocator.free(r);
+
+            // Log to daily file
+            const daily_path = try daily_log_path(allocator, parsed.workspace);
+            const user_one_line = try to_single_line(allocator, message);
+            const reply_one_line = try to_single_line(allocator, reply_text);
+            const user_log = try std.fmt.allocPrint(allocator, "- user: {s}", .{user_one_line});
+            const assistant_log = try std.fmt.allocPrint(allocator, "- assistant: {s}", .{reply_one_line});
+            try append_line(daily_path, user_log, allocator);
+            try append_line(daily_path, assistant_log, allocator);
+            return;
+        } else {
+            uiWrite("[LLM call failed, falling back to local mode]");
+            // Fall through to local reply
+        }
+        if (url.len > 0) allocator.free(url);
+    }
+
+    // ── Local fallback: memory-based reply ────────────────────────────────
     const reply = if (matches.len == 0)
         try std.fmt.allocPrint(
             allocator,
@@ -549,6 +690,52 @@ fn run_agent(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const assistant_log = try std.fmt.allocPrint(allocator, "- assistant: {s}", .{reply_one_line});
     try append_line(daily_path, user_log, allocator);
     try append_line(daily_path, assistant_log, allocator);
+}
+
+fn jsonEscape(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    for (text) |ch| {
+        switch (ch) {
+            '\\' => try out.appendSlice(allocator, "\\\\"),
+            '\"' => try out.appendSlice(allocator, "\\\""),
+            '\n' => try out.appendSlice(allocator, "\\n"),
+            '\r' => try out.appendSlice(allocator, "\\r"),
+            '\t' => try out.appendSlice(allocator, "\\t"),
+            else => {
+                if (ch < 0x20) {
+                    try out.append(allocator, ch);
+                } else {
+                    try out.append(allocator, ch);
+                }
+            },
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn extractJsonContent(json: []const u8) ?[]const u8 {
+    // Look for "content": "..." in the response (last occurrence for assistant content)
+    const marker = "\"content\":\"";
+    var last_found: ?usize = null;
+    var i: usize = 0;
+    while (i + marker.len < json.len) : (i += 1) {
+        if (std.mem.eql(u8, json[i..i + marker.len], marker)) {
+            last_found = i + marker.len;
+        }
+    }
+    if (last_found) |start| {
+        // Find the closing quote (handle escaped quotes)
+        var j = start;
+        while (j < json.len) : (j += 1) {
+            if (json[j] == '\\' and j + 1 < json.len) {
+                j += 1;
+                continue;
+            }
+            if (json[j] == '\"') break;
+        }
+        if (j > start) return json[start..j];
+    }
+    return null;
 }
 
 pub fn main(init: std.process.Init) !void {
