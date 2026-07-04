@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceLeaf, ItemView, Setting, PluginSettingTab } from 'obsidian';
+import { Plugin, WorkspaceLeaf, ItemView, Setting, PluginSettingTab, MarkdownView } from 'obsidian';
 import { runNullclaw } from './wasi-shim';
 
 const VIEW_TYPE = 'nullclaw-agent-view';
@@ -25,6 +25,7 @@ class NullclawView extends ItemView {
   private settings: NullClawSettings;
   private messages: Array<{ role: 'system' | 'user' | 'assistant' | 'tool'; content: string; name?: string; tool_call_id?: string }> = [];
   private viewportResizeHandler?: () => void;
+  private attachedRefs: string[] = [];
 
   constructor(leaf: WorkspaceLeaf, settings: NullClawSettings) {
     super(leaf);
@@ -53,6 +54,7 @@ class NullclawView extends ItemView {
       if (e.key === 'Enter' && !this.running) this.exec(this.inputEl.value);
     });
     this.setupMobileViewport(c);
+    this.setupFileDropAndPaste(c);
     setTimeout(() => this.inputEl.focus(), 200);
   }
 
@@ -113,7 +115,7 @@ class NullclawView extends ItemView {
 
   private async execSlashCommand(command: string) {
     if (!command) {
-      this.println('Slash commands: /help /version /status /memory list /read <path> /write <path> <content> /append <path> <content> /insert <path> <marker> <content> /search <query> /list [folder] /clear', 'nc-info');
+      this.println('Slash commands: /help /version /status /compact /digest-current /review-inbox /apply-memory /vault-doctor /feedback good|bad <text> /read /write /append /insert /search /list /clear', 'nc-info');
       return;
     }
 
@@ -123,9 +125,22 @@ class NullclawView extends ItemView {
     // Chat/session commands
     if (cmd === 'clear') {
       this.messages = [];
+      this.attachedRefs = [];
       this.println('Context cleared.', 'nc-info');
       return;
     }
+    if (cmd === 'compact') { await this.skillCompact(); return; }
+    if (cmd === 'digest-current') { await this.skillDigestCurrent(); return; }
+    if (cmd === 'review-inbox') { await this.skillReviewInbox(); return; }
+    if (cmd === 'apply-memory') { await this.skillApplyMemory(args.slice(1).includes('--yes')); return; }
+    if (cmd === 'vault-doctor') { await this.skillVaultDoctor(); return; }
+    if (cmd === 'feedback') {
+      if (!args[1] || args.length < 3) return this.println('Usage: /feedback good|bad <text>', 'nc-error');
+      await this.writeFeedback(args[1], args.slice(2).join(' '));
+      this.println('Feedback saved.', 'nc-output');
+      return;
+    }
+    if (cmd === 'init-memory') { await this.ensureMemoryScaffold(); this.println('Memory scaffold initialized.', 'nc-output'); return; }
 
     // Vault tools as slash commands
     if (cmd === 'read') {
@@ -218,8 +233,13 @@ class NullclawView extends ItemView {
       content: 'You are NullClaw, an AI assistant embedded in Obsidian Android. Maintain context across turns. You can use tools to read, write, append, insert, list and search the current Obsidian vault. Use tools when the user asks about notes/files or wants modifications. Be concise and answer in the user language.'
     };
 
+    await this.ensureMemoryScaffold();
+    const palaceContext = await this.loadPalaceContext(message);
+    const refContext = await this.resolveMessageReferences(message);
+    const enriched = [palaceContext, refContext, `User message:
+${message}`].filter(Boolean).join('\n\n---\n\n');
     const history = this.messages.slice(-20);
-    const requestMessages: any[] = [system, ...history, { role: 'user', content: message }];
+    const requestMessages: any[] = [system, ...history, { role: 'user', content: enriched }];
 
     const tools = this.toolSchemas();
 
@@ -398,6 +418,175 @@ class NullclawView extends ItemView {
     window.visualViewport?.addEventListener('scroll', apply);
     window.addEventListener('resize', apply);
     setTimeout(apply, 50);
+  }
+
+  private async ensureMemoryScaffold() {
+    const dirs = ['raw', 'sources', 'memory', 'memory/inbox', 'memory/feedback', 'people', 'projects', 'wiki', 'decisions', 'daily', 'palace'];
+    for (const d of dirs) if (!(await this.app.vault.adapter.exists(d))) await this.app.vault.adapter.mkdir(d);
+    const defaults: Record<string, string> = {
+      'profile.md': '# Profile\n\n用户画像，待沉淀。\n',
+      'vault.md': '# Vault\n\n这个知识库的用途、结构和长期目标。\n',
+      'style.md': '# Style\n\n输出风格偏好。\n',
+      'memory_policy.md': '# Memory Policy\n\n长期记忆写入 people/projects/wiki/decisions/daily 前需要人工确认。\n',
+      'palace/digest_note_room.md': '# digest_note_room\n\n触发：消化当前笔记或选区。\n必读：profile.md → vault.md → style.md → memory_policy.md → 当前笔记。\n输出：memory/inbox/YYYY-MM-DD.md。\n限制：不直接写入长期记忆。\n',
+    };
+    for (const [path, content] of Object.entries(defaults)) {
+      if (!(await this.app.vault.adapter.exists(path))) await this.app.vault.adapter.write(path, content);
+    }
+  }
+
+  private async loadPalaceContext(message: string): Promise<string> {
+    const candidates = ['profile.md', 'vault.md', 'style.md', 'memory_policy.md'];
+    if (/digest|消化|整理|总结/.test(message)) candidates.push('palace/digest_note_room.md');
+    const chunks: string[] = [];
+    for (const p of candidates) {
+      if (await this.app.vault.adapter.exists(p)) {
+        const text = await this.app.vault.adapter.read(p);
+        chunks.push(`Context file: ${p}\n${text.slice(0, 6000)}`);
+      }
+    }
+    return chunks.length ? `Memory Palace Context:\n\n${chunks.join('\n\n')}` : '';
+  }
+
+  private async resolveMessageReferences(message: string): Promise<string> {
+    const refs = new Set<string>();
+    for (const m of message.matchAll(/@([^\s]+\.md)/g)) refs.add(m[1]);
+    for (const m of message.matchAll(/\[\[([^\]]+)\]\]/g)) {
+      const target = m[1].split('|')[0].trim();
+      const found = this.app.metadataCache.getFirstLinkpathDest(target, '');
+      if (found) refs.add(found.path);
+      else if (target.endsWith('.md')) refs.add(target);
+    }
+    for (const r of this.attachedRefs) refs.add(r);
+    const chunks: string[] = [];
+    for (const ref of refs) {
+      try {
+        if (await this.app.vault.adapter.exists(ref)) chunks.push(`Referenced note: ${ref}\n${(await this.app.vault.adapter.read(ref)).slice(0, 12000)}`);
+      } catch {}
+    }
+    return chunks.length ? `Explicit References:\n\n${chunks.join('\n\n')}` : '';
+  }
+
+  private getActiveMarkdownContext(): { path: string; text: string; selection: string } | null {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const file = view?.file;
+    if (!view || !file) return null;
+    let selection = '';
+    try { selection = view.editor.getSelection(); } catch {}
+    let text = '';
+    try { text = view.editor.getValue(); } catch {}
+    return { path: file.path, text, selection };
+  }
+
+  private async skillCompact() {
+    if (!this.settings.apiKey) {
+      this.messages = this.messages.slice(-8);
+      this.println('Context compacted locally: kept last 8 messages.', 'nc-output');
+      return;
+    }
+    const text = this.messages.map(m => `${m.role}: ${m.content}`).join('\n').slice(-24000);
+    const summary = await this.callLLM(`请压缩下面会话上下文，保留用户偏好、待办、重要事实和未完成任务：\n\n${text}`);
+    if (summary) {
+      this.messages = [{ role: 'system', content: `Compressed context:\n${summary}` }];
+      this.println('Context compacted.\n' + summary, 'nc-output');
+    }
+  }
+
+  private async skillDigestCurrent() {
+    await this.ensureMemoryScaffold();
+    const ctx = this.getActiveMarkdownContext();
+    if (!ctx) return this.println('No active markdown note.', 'nc-error');
+    const target = ctx.selection || ctx.text;
+    const prompt = `消化当前 Obsidian 笔记，输出四部分：\n1. 要点\n2. 关联人物/项目/概念\n3. 可沉淀长期记忆候选（标注 people/projects/wiki/decisions/daily）\n4. 待办\n\n来源：${ctx.path}\n\n内容：\n${target.slice(0, 24000)}`;
+    const result = this.settings.apiKey ? await this.callLLM(prompt) : `# Digest: ${ctx.path}\n\n${target.slice(0, 4000)}`;
+    if (!result) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const out = `memory/inbox/${today}.md`;
+    await this.toolAppend(out, `\n## ${new Date().toLocaleString()} — ${ctx.path}\n\n${result}\n`);
+    this.println(`Digest written to ${out}\n\n${result}`, 'nc-output');
+  }
+
+  private async skillReviewInbox() {
+    await this.ensureMemoryScaffold();
+    const inbox = await this.collectFolderText('memory/inbox');
+    if (!inbox) return this.println('memory/inbox is empty.', 'nc-info');
+    const prompt = `审核 memory/inbox 待沉淀内容，去重归纳为可人工确认清单。每条标注建议归属 people/projects/wiki/decisions/daily、置信度、来源。\n\n${inbox.slice(0, 30000)}`;
+    const result = this.settings.apiKey ? await this.callLLM(prompt) : inbox;
+    if (!result) return;
+    const out = `memory/inbox/review-${new Date().toISOString().slice(0,10)}.md`;
+    await this.toolWrite(out, result);
+    this.println(`Review written to ${out}\n\n${result}`, 'nc-output');
+  }
+
+  private async skillApplyMemory(yes: boolean) {
+    await this.ensureMemoryScaffold();
+    const inbox = await this.collectFolderText('memory/inbox');
+    if (!inbox) return this.println('memory/inbox is empty.', 'nc-info');
+    const prompt = `基于下面 inbox，生成长期记忆合并方案。不要直接写入，输出要写入哪些文件和具体内容。目标目录：people/projects/wiki/decisions/daily/profile.md/style.md。\n\n${inbox.slice(0, 30000)}`;
+    const plan = this.settings.apiKey ? await this.callLLM(prompt) : inbox;
+    if (!plan) return;
+    const out = `memory/apply-plan-${new Date().toISOString().slice(0,10)}.md`;
+    await this.toolWrite(out, plan);
+    this.println(`Apply plan written to ${out}. Review manually before applying.\n\n${plan}`, 'nc-output');
+  }
+
+  private async skillVaultDoctor() {
+    await this.ensureMemoryScaffold();
+    const files = this.app.vault.getFiles();
+    const markdown = this.app.vault.getMarkdownFiles();
+    const rawFiles = files.filter((f: any) => f.path.startsWith('raw/'));
+    const emptyMd: string[] = [];
+    for (const f of markdown.slice(0, 500)) {
+      try { if ((await this.app.vault.cachedRead(f)).trim().length < 20) emptyMd.push(f.path); } catch {}
+    }
+    const report = `# Vault Doctor\n\n- total files: ${files.length}\n- markdown files: ${markdown.length}\n- raw files: ${rawFiles.length}\n- empty/near-empty notes: ${emptyMd.length}\n\n## Empty notes\n${emptyMd.slice(0,50).map(p=>`- ${p}`).join('\n') || 'None'}\n\n## Raw files\n${rawFiles.slice(0,80).map((f:any)=>`- ${f.path}`).join('\n') || 'None'}\n`;
+    const out = `memory/vault-doctor-${new Date().toISOString().slice(0,10)}.md`;
+    await this.toolWrite(out, report);
+    this.println(`Vault doctor report written to ${out}\n\n${report}`, 'nc-output');
+  }
+
+  private async writeFeedback(kind: string, text: string) {
+    await this.ensureMemoryScaffold();
+    const today = new Date().toISOString().slice(0,10);
+    await this.toolAppend(`memory/feedback/${today}.md`, `- ${new Date().toLocaleString()} [${kind}]: ${text}`);
+  }
+
+  private async collectFolderText(folder: string): Promise<string> {
+    const files = this.app.vault.getMarkdownFiles().filter((f: any) => f.path.startsWith(folder + '/'));
+    const chunks: string[] = [];
+    for (const f of files.slice(0, 100)) {
+      try { chunks.push(`## ${f.path}\n${(await this.app.vault.cachedRead(f)).slice(0, 12000)}`); } catch {}
+    }
+    return chunks.join('\n\n');
+  }
+
+  private setupFileDropAndPaste(container: HTMLElement) {
+    const saveFiles = async (files: FileList | File[]) => {
+      await this.ensureMemoryScaffold();
+      for (const file of Array.from(files)) {
+        const safe = file.name.replace(/[\\/:*?"<>|]/g, '_');
+        let path = `raw/${safe}`;
+        let i = 1;
+        while (await this.app.vault.adapter.exists(path)) {
+          const dot = safe.lastIndexOf('.');
+          path = dot > 0 ? `raw/${safe.slice(0,dot)}-${i}${safe.slice(dot)}` : `raw/${safe}-${i}`;
+          i++;
+        }
+        const buf = await file.arrayBuffer();
+        await this.app.vault.adapter.writeBinary(path, buf);
+        this.attachedRefs.push(path);
+        this.inputEl.value = (this.inputEl.value + ` @${path}`).trim();
+        this.println(`Saved attachment to ${path}`, 'nc-info');
+      }
+    };
+    container.addEventListener('dragover', (e) => { e.preventDefault(); });
+    container.addEventListener('drop', async (e: DragEvent) => {
+      e.preventDefault();
+      if (e.dataTransfer?.files?.length) await saveFiles(e.dataTransfer.files);
+    });
+    this.inputEl.addEventListener('paste', async (e: ClipboardEvent) => {
+      if (e.clipboardData?.files?.length) await saveFiles(e.clipboardData.files);
+    });
   }
 
   private parseArgs(input: string): string[] {

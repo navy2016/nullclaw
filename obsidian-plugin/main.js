@@ -503,6 +503,7 @@ var NullclawView = class extends import_obsidian.ItemView {
     this.wasmBytes = null;
     this.running = false;
     this.messages = [];
+    this.attachedRefs = [];
     this.settings = settings;
   }
   getViewType() {
@@ -530,6 +531,7 @@ var NullclawView = class extends import_obsidian.ItemView {
       if (e.key === "Enter" && !this.running) this.exec(this.inputEl.value);
     });
     this.setupMobileViewport(c);
+    this.setupFileDropAndPaste(c);
     setTimeout(() => this.inputEl.focus(), 200);
   }
   async loadWasm() {
@@ -586,14 +588,46 @@ var NullclawView = class extends import_obsidian.ItemView {
   }
   async execSlashCommand(command) {
     if (!command) {
-      this.println("Slash commands: /help /version /status /memory list /read <path> /write <path> <content> /append <path> <content> /insert <path> <marker> <content> /search <query> /list [folder] /clear", "nc-info");
+      this.println("Slash commands: /help /version /status /compact /digest-current /review-inbox /apply-memory /vault-doctor /feedback good|bad <text> /read /write /append /insert /search /list /clear", "nc-info");
       return;
     }
     const args = this.parseArgs(command);
     const cmd = args[0];
     if (cmd === "clear") {
       this.messages = [];
+      this.attachedRefs = [];
       this.println("Context cleared.", "nc-info");
+      return;
+    }
+    if (cmd === "compact") {
+      await this.skillCompact();
+      return;
+    }
+    if (cmd === "digest-current") {
+      await this.skillDigestCurrent();
+      return;
+    }
+    if (cmd === "review-inbox") {
+      await this.skillReviewInbox();
+      return;
+    }
+    if (cmd === "apply-memory") {
+      await this.skillApplyMemory(args.slice(1).includes("--yes"));
+      return;
+    }
+    if (cmd === "vault-doctor") {
+      await this.skillVaultDoctor();
+      return;
+    }
+    if (cmd === "feedback") {
+      if (!args[1] || args.length < 3) return this.println("Usage: /feedback good|bad <text>", "nc-error");
+      await this.writeFeedback(args[1], args.slice(2).join(" "));
+      this.println("Feedback saved.", "nc-output");
+      return;
+    }
+    if (cmd === "init-memory") {
+      await this.ensureMemoryScaffold();
+      this.println("Memory scaffold initialized.", "nc-output");
       return;
     }
     if (cmd === "read") {
@@ -677,8 +711,13 @@ var NullclawView = class extends import_obsidian.ItemView {
       role: "system",
       content: "You are NullClaw, an AI assistant embedded in Obsidian Android. Maintain context across turns. You can use tools to read, write, append, insert, list and search the current Obsidian vault. Use tools when the user asks about notes/files or wants modifications. Be concise and answer in the user language."
     };
+    await this.ensureMemoryScaffold();
+    const palaceContext = await this.loadPalaceContext(message);
+    const refContext = await this.resolveMessageReferences(message);
+    const enriched = [palaceContext, refContext, `User message:
+${message}`].filter(Boolean).join("\n\n---\n\n");
     const history = this.messages.slice(-20);
-    const requestMessages = [system, ...history, { role: "user", content: message }];
+    const requestMessages = [system, ...history, { role: "user", content: enriched }];
     const tools = this.toolSchemas();
     try {
       const first = await this.chatCompletion(base, requestMessages, tools);
@@ -851,6 +890,227 @@ var NullclawView = class extends import_obsidian.ItemView {
     window.visualViewport?.addEventListener("scroll", apply);
     window.addEventListener("resize", apply);
     setTimeout(apply, 50);
+  }
+  async ensureMemoryScaffold() {
+    const dirs = ["raw", "sources", "memory", "memory/inbox", "memory/feedback", "people", "projects", "wiki", "decisions", "daily", "palace"];
+    for (const d of dirs) if (!await this.app.vault.adapter.exists(d)) await this.app.vault.adapter.mkdir(d);
+    const defaults = {
+      "profile.md": "# Profile\n\n\u7528\u6237\u753B\u50CF\uFF0C\u5F85\u6C89\u6DC0\u3002\n",
+      "vault.md": "# Vault\n\n\u8FD9\u4E2A\u77E5\u8BC6\u5E93\u7684\u7528\u9014\u3001\u7ED3\u6784\u548C\u957F\u671F\u76EE\u6807\u3002\n",
+      "style.md": "# Style\n\n\u8F93\u51FA\u98CE\u683C\u504F\u597D\u3002\n",
+      "memory_policy.md": "# Memory Policy\n\n\u957F\u671F\u8BB0\u5FC6\u5199\u5165 people/projects/wiki/decisions/daily \u524D\u9700\u8981\u4EBA\u5DE5\u786E\u8BA4\u3002\n",
+      "palace/digest_note_room.md": "# digest_note_room\n\n\u89E6\u53D1\uFF1A\u6D88\u5316\u5F53\u524D\u7B14\u8BB0\u6216\u9009\u533A\u3002\n\u5FC5\u8BFB\uFF1Aprofile.md \u2192 vault.md \u2192 style.md \u2192 memory_policy.md \u2192 \u5F53\u524D\u7B14\u8BB0\u3002\n\u8F93\u51FA\uFF1Amemory/inbox/YYYY-MM-DD.md\u3002\n\u9650\u5236\uFF1A\u4E0D\u76F4\u63A5\u5199\u5165\u957F\u671F\u8BB0\u5FC6\u3002\n"
+    };
+    for (const [path, content] of Object.entries(defaults)) {
+      if (!await this.app.vault.adapter.exists(path)) await this.app.vault.adapter.write(path, content);
+    }
+  }
+  async loadPalaceContext(message) {
+    const candidates = ["profile.md", "vault.md", "style.md", "memory_policy.md"];
+    if (/digest|消化|整理|总结/.test(message)) candidates.push("palace/digest_note_room.md");
+    const chunks = [];
+    for (const p of candidates) {
+      if (await this.app.vault.adapter.exists(p)) {
+        const text = await this.app.vault.adapter.read(p);
+        chunks.push(`Context file: ${p}
+${text.slice(0, 6e3)}`);
+      }
+    }
+    return chunks.length ? `Memory Palace Context:
+
+${chunks.join("\n\n")}` : "";
+  }
+  async resolveMessageReferences(message) {
+    const refs = /* @__PURE__ */ new Set();
+    for (const m of message.matchAll(/@([^\s]+\.md)/g)) refs.add(m[1]);
+    for (const m of message.matchAll(/\[\[([^\]]+)\]\]/g)) {
+      const target = m[1].split("|")[0].trim();
+      const found = this.app.metadataCache.getFirstLinkpathDest(target, "");
+      if (found) refs.add(found.path);
+      else if (target.endsWith(".md")) refs.add(target);
+    }
+    for (const r of this.attachedRefs) refs.add(r);
+    const chunks = [];
+    for (const ref of refs) {
+      try {
+        if (await this.app.vault.adapter.exists(ref)) chunks.push(`Referenced note: ${ref}
+${(await this.app.vault.adapter.read(ref)).slice(0, 12e3)}`);
+      } catch {
+      }
+    }
+    return chunks.length ? `Explicit References:
+
+${chunks.join("\n\n")}` : "";
+  }
+  getActiveMarkdownContext() {
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    const file = view?.file;
+    if (!view || !file) return null;
+    let selection = "";
+    try {
+      selection = view.editor.getSelection();
+    } catch {
+    }
+    let text = "";
+    try {
+      text = view.editor.getValue();
+    } catch {
+    }
+    return { path: file.path, text, selection };
+  }
+  async skillCompact() {
+    if (!this.settings.apiKey) {
+      this.messages = this.messages.slice(-8);
+      this.println("Context compacted locally: kept last 8 messages.", "nc-output");
+      return;
+    }
+    const text = this.messages.map((m) => `${m.role}: ${m.content}`).join("\n").slice(-24e3);
+    const summary = await this.callLLM(`\u8BF7\u538B\u7F29\u4E0B\u9762\u4F1A\u8BDD\u4E0A\u4E0B\u6587\uFF0C\u4FDD\u7559\u7528\u6237\u504F\u597D\u3001\u5F85\u529E\u3001\u91CD\u8981\u4E8B\u5B9E\u548C\u672A\u5B8C\u6210\u4EFB\u52A1\uFF1A
+
+${text}`);
+    if (summary) {
+      this.messages = [{ role: "system", content: `Compressed context:
+${summary}` }];
+      this.println("Context compacted.\n" + summary, "nc-output");
+    }
+  }
+  async skillDigestCurrent() {
+    await this.ensureMemoryScaffold();
+    const ctx = this.getActiveMarkdownContext();
+    if (!ctx) return this.println("No active markdown note.", "nc-error");
+    const target = ctx.selection || ctx.text;
+    const prompt = `\u6D88\u5316\u5F53\u524D Obsidian \u7B14\u8BB0\uFF0C\u8F93\u51FA\u56DB\u90E8\u5206\uFF1A
+1. \u8981\u70B9
+2. \u5173\u8054\u4EBA\u7269/\u9879\u76EE/\u6982\u5FF5
+3. \u53EF\u6C89\u6DC0\u957F\u671F\u8BB0\u5FC6\u5019\u9009\uFF08\u6807\u6CE8 people/projects/wiki/decisions/daily\uFF09
+4. \u5F85\u529E
+
+\u6765\u6E90\uFF1A${ctx.path}
+
+\u5185\u5BB9\uFF1A
+${target.slice(0, 24e3)}`;
+    const result = this.settings.apiKey ? await this.callLLM(prompt) : `# Digest: ${ctx.path}
+
+${target.slice(0, 4e3)}`;
+    if (!result) return;
+    const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    const out = `memory/inbox/${today}.md`;
+    await this.toolAppend(out, `
+## ${(/* @__PURE__ */ new Date()).toLocaleString()} \u2014 ${ctx.path}
+
+${result}
+`);
+    this.println(`Digest written to ${out}
+
+${result}`, "nc-output");
+  }
+  async skillReviewInbox() {
+    await this.ensureMemoryScaffold();
+    const inbox = await this.collectFolderText("memory/inbox");
+    if (!inbox) return this.println("memory/inbox is empty.", "nc-info");
+    const prompt = `\u5BA1\u6838 memory/inbox \u5F85\u6C89\u6DC0\u5185\u5BB9\uFF0C\u53BB\u91CD\u5F52\u7EB3\u4E3A\u53EF\u4EBA\u5DE5\u786E\u8BA4\u6E05\u5355\u3002\u6BCF\u6761\u6807\u6CE8\u5EFA\u8BAE\u5F52\u5C5E people/projects/wiki/decisions/daily\u3001\u7F6E\u4FE1\u5EA6\u3001\u6765\u6E90\u3002
+
+${inbox.slice(0, 3e4)}`;
+    const result = this.settings.apiKey ? await this.callLLM(prompt) : inbox;
+    if (!result) return;
+    const out = `memory/inbox/review-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.md`;
+    await this.toolWrite(out, result);
+    this.println(`Review written to ${out}
+
+${result}`, "nc-output");
+  }
+  async skillApplyMemory(yes) {
+    await this.ensureMemoryScaffold();
+    const inbox = await this.collectFolderText("memory/inbox");
+    if (!inbox) return this.println("memory/inbox is empty.", "nc-info");
+    const prompt = `\u57FA\u4E8E\u4E0B\u9762 inbox\uFF0C\u751F\u6210\u957F\u671F\u8BB0\u5FC6\u5408\u5E76\u65B9\u6848\u3002\u4E0D\u8981\u76F4\u63A5\u5199\u5165\uFF0C\u8F93\u51FA\u8981\u5199\u5165\u54EA\u4E9B\u6587\u4EF6\u548C\u5177\u4F53\u5185\u5BB9\u3002\u76EE\u6807\u76EE\u5F55\uFF1Apeople/projects/wiki/decisions/daily/profile.md/style.md\u3002
+
+${inbox.slice(0, 3e4)}`;
+    const plan = this.settings.apiKey ? await this.callLLM(prompt) : inbox;
+    if (!plan) return;
+    const out = `memory/apply-plan-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.md`;
+    await this.toolWrite(out, plan);
+    this.println(`Apply plan written to ${out}. Review manually before applying.
+
+${plan}`, "nc-output");
+  }
+  async skillVaultDoctor() {
+    await this.ensureMemoryScaffold();
+    const files = this.app.vault.getFiles();
+    const markdown = this.app.vault.getMarkdownFiles();
+    const rawFiles = files.filter((f) => f.path.startsWith("raw/"));
+    const emptyMd = [];
+    for (const f of markdown.slice(0, 500)) {
+      try {
+        if ((await this.app.vault.cachedRead(f)).trim().length < 20) emptyMd.push(f.path);
+      } catch {
+      }
+    }
+    const report = `# Vault Doctor
+
+- total files: ${files.length}
+- markdown files: ${markdown.length}
+- raw files: ${rawFiles.length}
+- empty/near-empty notes: ${emptyMd.length}
+
+## Empty notes
+${emptyMd.slice(0, 50).map((p) => `- ${p}`).join("\n") || "None"}
+
+## Raw files
+${rawFiles.slice(0, 80).map((f) => `- ${f.path}`).join("\n") || "None"}
+`;
+    const out = `memory/vault-doctor-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.md`;
+    await this.toolWrite(out, report);
+    this.println(`Vault doctor report written to ${out}
+
+${report}`, "nc-output");
+  }
+  async writeFeedback(kind, text) {
+    await this.ensureMemoryScaffold();
+    const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    await this.toolAppend(`memory/feedback/${today}.md`, `- ${(/* @__PURE__ */ new Date()).toLocaleString()} [${kind}]: ${text}`);
+  }
+  async collectFolderText(folder) {
+    const files = this.app.vault.getMarkdownFiles().filter((f) => f.path.startsWith(folder + "/"));
+    const chunks = [];
+    for (const f of files.slice(0, 100)) {
+      try {
+        chunks.push(`## ${f.path}
+${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
+      } catch {
+      }
+    }
+    return chunks.join("\n\n");
+  }
+  setupFileDropAndPaste(container) {
+    const saveFiles = async (files) => {
+      await this.ensureMemoryScaffold();
+      for (const file of Array.from(files)) {
+        const safe = file.name.replace(/[\\/:*?"<>|]/g, "_");
+        let path = `raw/${safe}`;
+        let i = 1;
+        while (await this.app.vault.adapter.exists(path)) {
+          const dot = safe.lastIndexOf(".");
+          path = dot > 0 ? `raw/${safe.slice(0, dot)}-${i}${safe.slice(dot)}` : `raw/${safe}-${i}`;
+          i++;
+        }
+        const buf = await file.arrayBuffer();
+        await this.app.vault.adapter.writeBinary(path, buf);
+        this.attachedRefs.push(path);
+        this.inputEl.value = (this.inputEl.value + ` @${path}`).trim();
+        this.println(`Saved attachment to ${path}`, "nc-info");
+      }
+    };
+    container.addEventListener("dragover", (e) => {
+      e.preventDefault();
+    });
+    container.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      if (e.dataTransfer?.files?.length) await saveFiles(e.dataTransfer.files);
+    });
+    this.inputEl.addEventListener("paste", async (e) => {
+      if (e.clipboardData?.files?.length) await saveFiles(e.clipboardData.files);
+    });
   }
   parseArgs(input) {
     const args = [];
