@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceLeaf, ItemView, Setting, PluginSettingTab, MarkdownView } from 'obsidian';
+import { Plugin, WorkspaceLeaf, ItemView, Setting, PluginSettingTab, MarkdownView, requestUrl } from 'obsidian';
 import { runNullclaw } from './wasi-shim';
 
 const VIEW_TYPE = 'nullclaw-agent-view';
@@ -288,7 +288,10 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
     };
     if (tools.length) body.tools = tools;
 
-    const res = await fetch(`${base}/chat/completions`, {
+    // Use Obsidian's native requestUrl instead of browser fetch.
+    // Android WebView fetch is frequently blocked by CORS / network policy and reports only "Failed to fetch".
+    const resp = await requestUrl({
+      url: `${base}/chat/completions`,
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${this.settings.apiKey}`,
@@ -297,10 +300,12 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
         'X-Title': 'NullClaw Obsidian',
       },
       body: JSON.stringify(body),
+      throw: false,
     });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`${res.status} ${text.slice(0, 500)}`);
-    return JSON.parse(text);
+    const status = resp.status;
+    const text = resp.text ?? '';
+    if (status < 200 || status >= 300) throw new Error(`${status} ${text.slice(0, 800)}`);
+    return resp.json ?? JSON.parse(text);
   }
 
   private remember(user: string, assistant: string) {

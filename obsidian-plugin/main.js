@@ -763,7 +763,8 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
       temperature: 0.7
     };
     if (tools.length) body.tools = tools;
-    const res = await fetch(`${base}/chat/completions`, {
+    const resp = await (0, import_obsidian.requestUrl)({
+      url: `${base}/chat/completions`,
       method: "POST",
       headers: {
         "Authorization": `Bearer ${this.settings.apiKey}`,
@@ -771,11 +772,13 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
         "HTTP-Referer": "app://obsidian-nullclaw",
         "X-Title": "NullClaw Obsidian"
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      throw: false
     });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`${res.status} ${text.slice(0, 500)}`);
-    return JSON.parse(text);
+    const status = resp.status;
+    const text = resp.text ?? "";
+    if (status < 200 || status >= 300) throw new Error(`${status} ${text.slice(0, 800)}`);
+    return resp.json ?? JSON.parse(text);
   }
   remember(user, assistant) {
     this.messages.push({ role: "user", content: user });
