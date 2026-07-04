@@ -1,30 +1,34 @@
 .nullclaw-terminal {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  height: var(--nullclaw-view-height, 100%);
+  max-height: var(--nullclaw-view-height, 100%);
+  min-height: 0;
+  overflow: hidden;
   font-family: var(--font-monospace);
   background: var(--background-primary);
   color: var(--text-normal);
 }
 
 .nullclaw-output {
-  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px;
   font-size: 13px;
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+  overscroll-behavior: contain;
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
 .nullclaw-output .nc-line {
-  margin-bottom: 2px;
+  margin-bottom: 8px;
 }
 
 .nullclaw-output .nc-prompt {
   color: var(--text-accent);
-  font-weight: bold;
+  font-weight: 700;
 }
 
 .nullclaw-output .nc-output {
@@ -40,48 +44,17 @@
   font-style: italic;
 }
 
-.nullclaw-input-row {
-  display: flex;
-  align-items: center;
-  padding: 8px 12px;
-  gap: 8px;
-}
-
-.nullclaw-input-prompt {
-  color: var(--text-accent);
-  font-weight: bold;
-  font-family: var(--font-monospace);
-  font-size: 14px;
-  user-select: none;
-}
-
-.nullclaw-input {
-  flex: 1;
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 4px;
-  color: var(--text-normal);
-  padding: 8px 12px;
-  font-family: var(--font-monospace);
-  font-size: 13px;
-  outline: none;
-}
-
-.nullclaw-input:focus {
-  border-color: var(--interactive-accent);
-}
-
-.nullclaw-input::placeholder {
-  color: var(--text-muted);
-}
-
 .nullclaw-status {
-  padding: 4px 12px;
-  font-size: 11px;
-  color: var(--text-muted);
-  border-top: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--background-primary);
+  border-top: 1px solid var(--background-modifier-border);
 }
 
 .nullclaw-status .nc-dot {
@@ -89,51 +62,57 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  margin-right: 4px;
+  margin-right: 5px;
   vertical-align: middle;
 }
 
-.nullclaw-status .nc-dot-ready {
-  background: #4caf50;
+.nullclaw-status .nc-dot-ready { background: #4caf50; }
+.nullclaw-status .nc-dot-running { background: #ff9800; animation: nc-pulse 1s infinite; }
+.nullclaw-status .nc-dot-error { background: #f44336; }
+
+.nullclaw-input-row {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 7px 12px 10px;
+  gap: 8px;
+  background: var(--background-primary);
 }
 
-.nullclaw-status .nc-dot-running {
-  background: #ff9800;
-  animation: nc-pulse 1s infinite;
+.nullclaw-input-prompt {
+  color: var(--text-accent);
+  font-weight: 700;
+  font-family: var(--font-monospace);
+  font-size: 14px;
+  user-select: none;
 }
 
-.nullclaw-status .nc-dot-error {
-  background: #f44336;
+.nullclaw-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  color: var(--text-normal);
+  padding: 9px 12px;
+  font-family: var(--font-monospace);
+  font-size: 13px;
+  outline: none;
 }
+
+.nullclaw-input:focus { border-color: var(--interactive-accent); }
+.nullclaw-input::placeholder { color: var(--text-muted); }
 
 @keyframes nc-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
 
-/* Mobile keyboard/layout fixes */
-.nullclaw-terminal {
-  min-height: 0;
-  overflow: hidden;
-}
-.nullclaw-output {
-  min-height: 0;
-  overscroll-behavior: contain;
-}
-.nullclaw-input-row {
-  flex-shrink: 0;
-  position: sticky;
-  bottom: 0;
-  background: var(--background-primary);
-  z-index: 5;
-}
-.nullclaw-status {
-  flex-shrink: 0;
-  background: var(--background-primary);
-}
 body.is-mobile .nullclaw-terminal {
-  height: 100dvh;
+  height: var(--nullclaw-view-height, 100%);
+  max-height: var(--nullclaw-view-height, 100%);
 }
+
 body.is-mobile .nullclaw-input {
-  font-size: 16px; /* avoid Android WebView zoom/jump */
+  font-size: 16px;
 }

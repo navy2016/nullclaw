@@ -41,12 +41,12 @@ class NullclawView extends ItemView {
     c.empty();
     c.addClass('nullclaw-terminal');
     this.outputEl = c.createDiv({ cls: 'nullclaw-output' });
-    const row = c.createDiv({ cls: 'nullclaw-input-row' });
-    row.createSpan({ cls: 'nullclaw-input-prompt', text: '❯' });
-    this.inputEl = row.createEl('input', { cls: 'nullclaw-input', attr: { type: 'text', placeholder: '直接输入发给 AI；命令用 /help /version /memory list ...' } });
     const st = c.createDiv({ cls: 'nullclaw-status' });
     this.statusDot = st.createSpan({ cls: 'nc-dot nc-dot-error' });
     this.statusText = st.createSpan({ text: 'Loading nullclaw.wasm...' });
+    const row = c.createDiv({ cls: 'nullclaw-input-row' });
+    row.createSpan({ cls: 'nullclaw-input-prompt', text: '❯' });
+    this.inputEl = row.createEl('input', { cls: 'nullclaw-input', attr: { type: 'text', placeholder: '直接输入发给 AI；命令用 /help /version /memory list ...' } });
 
     await this.loadWasm();
 
@@ -55,7 +55,6 @@ class NullclawView extends ItemView {
     });
     this.setupMobileViewport(c);
     this.setupFileDropAndPaste(c);
-    setTimeout(() => this.inputEl.focus(), 200);
   }
 
   private async loadWasm() {
@@ -92,7 +91,7 @@ class NullclawView extends ItemView {
     this.running = true;
     this.statusDot.className = 'nc-dot nc-dot-running';
     this.statusText.textContent = 'Running...';
-    this.println(`❯ ${raw}`, 'nc-prompt');
+    this.println(`❯ ${raw}`, 'nc-prompt', true);
     this.inputEl.value = '';
     this.inputEl.disabled = true;
 
@@ -109,7 +108,6 @@ class NullclawView extends ItemView {
       this.statusDot.className = 'nc-dot nc-dot-ready';
       this.statusText.textContent = 'Ready';
       this.inputEl.disabled = false;
-      this.inputEl.focus();
     }
   }
 
@@ -199,8 +197,8 @@ class NullclawView extends ItemView {
       this.settings,
       (text: string) => this.println(text, 'nc-info'),
     );
-    if (result.stdout) this.println(result.stdout, 'nc-output');
-    if (result.stderr) this.println(result.stderr, 'nc-error');
+    if (result.stdout) await this.streamPrint(result.stdout, 'nc-output', true);
+    if (result.stderr) await this.streamPrint(result.stderr, 'nc-error', true);
     if (!result.stdout && !result.stderr) this.println(`(exit: ${result.exitCode})`, 'nc-info');
   }
 
@@ -208,7 +206,7 @@ class NullclawView extends ItemView {
     if (this.settings.apiKey) {
       const reply = await this.callLLM(message);
       if (reply) {
-        this.println(reply, 'nc-output');
+        await this.streamPrint(reply, 'nc-output', true);
         return;
       }
       this.println('[LLM call failed, falling back to local mode]', 'nc-info');
@@ -221,8 +219,8 @@ class NullclawView extends ItemView {
       this.settings,
       (text: string) => this.println(text, 'nc-info'),
     );
-    if (result.stdout) this.println(result.stdout, 'nc-output');
-    if (result.stderr) this.println(result.stderr, 'nc-error');
+    if (result.stdout) await this.streamPrint(result.stdout, 'nc-output', true);
+    if (result.stderr) await this.streamPrint(result.stderr, 'nc-error', true);
     if (!result.stdout && !result.stderr) this.println(`(exit: ${result.exitCode})`, 'nc-info');
   }
 
@@ -412,11 +410,9 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
   private setupMobileViewport(container: HTMLElement) {
     const apply = () => {
       const vv = window.visualViewport;
-      if (vv) {
-        container.style.height = Math.max(260, vv.height - container.getBoundingClientRect().top - 4) + 'px';
-      } else {
-        container.style.height = '100%';
-      }
+      const top = container.getBoundingClientRect().top;
+      const available = vv ? Math.max(260, vv.height - top - 2) : container.clientHeight;
+      container.style.setProperty('--nullclaw-view-height', `${available}px`);
     };
     this.viewportResizeHandler = apply;
     window.visualViewport?.addEventListener('resize', apply);
@@ -605,10 +601,36 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
     return args;
   }
 
-  private println(text: string, cls: string) {
+  private isNearBottom(threshold = 64): boolean {
+    const el = this.outputEl;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+  }
+
+  private stickToBottom() {
+    this.outputEl.scrollTop = this.outputEl.scrollHeight;
+  }
+
+  private println(text: string, cls: string, forceStick = false) {
+    const shouldStick = forceStick || this.isNearBottom();
     const line = this.outputEl.createDiv({ cls: `nc-line ${cls}` });
     line.textContent = text;
-    this.outputEl.scrollTop = this.outputEl.scrollHeight;
+    if (shouldStick) this.stickToBottom();
+    return line;
+  }
+
+  private async streamPrint(text: string, cls: string, forceStick = false) {
+    const shouldStickInitially = forceStick || this.isNearBottom();
+    const line = this.outputEl.createDiv({ cls: `nc-line ${cls}` });
+    // For short command outputs, stream by line; for long LLM text, stream in chunks.
+    const chunks = text.length > 600 ? text.match(/[\s\S]{1,24}/g) ?? [text] : text.split(/(?<=\n)/g);
+    let acc = '';
+    for (const chunk of chunks) {
+      acc += chunk;
+      line.textContent = acc;
+      if (shouldStickInitially && this.isNearBottom(180)) this.stickToBottom();
+      await new Promise(resolve => setTimeout(resolve, text.length > 600 ? 8 : 12));
+    }
+    if (shouldStickInitially) this.stickToBottom();
   }
 
   async onClose() {
