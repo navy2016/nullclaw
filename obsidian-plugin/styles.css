@@ -74,7 +74,7 @@
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  padding: 7px 12px 10px;
+  padding: 6px 12px 4px;
   gap: 8px;
   background: var(--background-primary);
 }
@@ -115,4 +115,13 @@ body.is-mobile .nullclaw-terminal {
 
 body.is-mobile .nullclaw-input {
   font-size: 16px;
+}
+
+
+/* Android IME gap reduction */
+body.is-mobile .nullclaw-input-row {
+  padding-bottom: 2px;
+}
+body.is-mobile .nullclaw-status {
+  padding-bottom: 2px;
 }

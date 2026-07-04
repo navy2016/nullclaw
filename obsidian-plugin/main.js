@@ -880,14 +880,22 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
   setupMobileViewport(container) {
     const apply = () => {
       const vv = window.visualViewport;
-      const top = container.getBoundingClientRect().top;
-      const available = vv ? Math.max(260, vv.height - top - 2) : container.clientHeight;
-      container.style.setProperty("--nullclaw-view-height", `${available}px`);
+      const rect = container.getBoundingClientRect();
+      if (vv) {
+        const visualBottom = vv.offsetTop + vv.height;
+        const available = Math.max(220, visualBottom - rect.top);
+        container.style.setProperty("--nullclaw-view-height", `${available}px`);
+        container.style.setProperty("--nullclaw-vv-bottom", `${visualBottom}px`);
+      } else {
+        container.style.setProperty("--nullclaw-view-height", `${container.clientHeight}px`);
+      }
     };
     this.viewportResizeHandler = apply;
     window.visualViewport?.addEventListener("resize", apply);
     window.visualViewport?.addEventListener("scroll", apply);
     window.addEventListener("resize", apply);
+    this.inputEl.addEventListener("focus", () => setTimeout(apply, 80));
+    this.inputEl.addEventListener("blur", () => setTimeout(apply, 80));
     setTimeout(apply, 50);
   }
   async ensureMemoryScaffold() {
