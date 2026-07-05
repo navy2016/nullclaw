@@ -411,28 +411,25 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
     const apply = () => {
       const vv = window.visualViewport;
       const rect = container.getBoundingClientRect();
+      const parent = container.parentElement as HTMLElement | null;
       const statusHeight = this.statusText?.parentElement?.getBoundingClientRect().height ?? 22;
       const inputHeight = this.inputEl?.parentElement?.getBoundingClientRect().height ?? 48;
       const composerHeight = statusHeight + inputHeight;
-
-      container.style.setProperty('--nullclaw-fixed-left', `${Math.max(0, rect.left)}px`);
-      container.style.setProperty('--nullclaw-fixed-width', `${Math.max(0, rect.width)}px`);
-      container.style.setProperty('--nullclaw-status-height', `${statusHeight}px`);
-      container.style.setProperty('--nullclaw-input-height', `${inputHeight}px`);
       container.style.setProperty('--nullclaw-composer-height', `${composerHeight}px`);
 
-      if (vv) {
-        // On Obsidian Android the plugin pane may end above Obsidian's own bottom chrome.
-        // The IME top is the visual viewport bottom. Pin composer to that, not to pane bottom.
-        const visualBottom = vv.offsetTop + vv.height;
-        const layoutBottom = window.innerHeight;
-        const keyboardInset = Math.max(0, layoutBottom - visualBottom);
-        const available = Math.max(220, visualBottom - rect.top);
-        container.style.setProperty('--nullclaw-keyboard-inset', `${keyboardInset}px`);
-        container.style.setProperty('--nullclaw-view-height', `${available}px`);
-      } else {
-        container.style.setProperty('--nullclaw-keyboard-inset', '0px');
-        container.style.setProperty('--nullclaw-view-height', `${container.clientHeight}px`);
+      const visualBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+      const paneBottom = parent ? parent.getBoundingClientRect().bottom : rect.bottom;
+      // Stay inside Obsidian's pane to avoid Android clipping fixed elements.
+      // But update both pane and inner terminal height so the output bottom moves with the keyboard.
+      const effectiveBottom = Math.min(visualBottom, paneBottom);
+      const available = Math.max(220, effectiveBottom - rect.top);
+      container.style.setProperty('--nullclaw-view-height', `${available}px`);
+      container.style.height = `${available}px`;
+      container.style.maxHeight = `${available}px`;
+      if (parent) {
+        parent.style.height = `${available}px`;
+        parent.style.maxHeight = `${available}px`;
+        parent.style.overflow = 'hidden';
       }
     };
     this.viewportResizeHandler = apply;
