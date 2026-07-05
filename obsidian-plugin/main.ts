@@ -411,15 +411,27 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
     const apply = () => {
       const vv = window.visualViewport;
       const rect = container.getBoundingClientRect();
+      const statusHeight = this.statusText?.parentElement?.getBoundingClientRect().height ?? 22;
+      const inputHeight = this.inputEl?.parentElement?.getBoundingClientRect().height ?? 48;
+      const composerHeight = statusHeight + inputHeight;
+
+      container.style.setProperty('--nullclaw-fixed-left', `${Math.max(0, rect.left)}px`);
+      container.style.setProperty('--nullclaw-fixed-width', `${Math.max(0, rect.width)}px`);
+      container.style.setProperty('--nullclaw-status-height', `${statusHeight}px`);
+      container.style.setProperty('--nullclaw-input-height', `${inputHeight}px`);
+      container.style.setProperty('--nullclaw-composer-height', `${composerHeight}px`);
+
       if (vv) {
-        // Android WebView/Obsidian often shifts visualViewport with offsetTop when IME opens.
-        // Use the real visual bottom (offsetTop + height), otherwise the terminal is too short
-        // and leaves a large gap between the input row and the keyboard.
+        // On Obsidian Android the plugin pane may end above Obsidian's own bottom chrome.
+        // The IME top is the visual viewport bottom. Pin composer to that, not to pane bottom.
         const visualBottom = vv.offsetTop + vv.height;
+        const layoutBottom = window.innerHeight;
+        const keyboardInset = Math.max(0, layoutBottom - visualBottom);
         const available = Math.max(220, visualBottom - rect.top);
+        container.style.setProperty('--nullclaw-keyboard-inset', `${keyboardInset}px`);
         container.style.setProperty('--nullclaw-view-height', `${available}px`);
-        container.style.setProperty('--nullclaw-vv-bottom', `${visualBottom}px`);
       } else {
+        container.style.setProperty('--nullclaw-keyboard-inset', '0px');
         container.style.setProperty('--nullclaw-view-height', `${container.clientHeight}px`);
       }
     };
@@ -428,8 +440,10 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
     window.visualViewport?.addEventListener('scroll', apply);
     window.addEventListener('resize', apply);
     this.inputEl.addEventListener('focus', () => setTimeout(apply, 80));
+    this.inputEl.addEventListener('focus', () => setTimeout(apply, 260));
     this.inputEl.addEventListener('blur', () => setTimeout(apply, 80));
     setTimeout(apply, 50);
+    setTimeout(apply, 300);
   }
 
   private async ensureMemoryScaffold() {
