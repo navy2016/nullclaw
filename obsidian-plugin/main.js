@@ -505,6 +505,7 @@ var NullclawView = class extends import_obsidian.ItemView {
     this.messages = [];
     this.mobileClosedComposerGap = 0;
     this.mobileBottomChromeHeight = 0;
+    this.imeFocusShift = 0;
     this.attachedRefs = [];
     this.settings = settings;
   }
@@ -880,6 +881,18 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
     }
   }
   setupMobileViewport(container) {
+    const setAncestorOverflow = (visible) => {
+      let node = container;
+      for (let i = 0; node && i < 8; i++, node = node.parentElement) {
+        node.style.overflow = visible ? "visible" : "hidden";
+      }
+    };
+    const measureClosedShift = () => {
+      const inputRow = this.inputEl?.parentElement;
+      if (!inputRow) return 0;
+      const inputBottom = inputRow.getBoundingClientRect().bottom;
+      return Math.max(0, window.innerHeight - inputBottom - 4);
+    };
     const apply = () => {
       const vv = window.visualViewport;
       const rect = container.getBoundingClientRect();
@@ -890,36 +903,42 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
       container.style.setProperty("--nullclaw-composer-height", `${composerHeight}px`);
       const visualBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
       const paneBottom = parent ? parent.getBoundingClientRect().bottom : rect.bottom;
-      const inputRow = this.inputEl?.parentElement;
-      const inputBottom = inputRow?.getBoundingClientRect().bottom ?? rect.bottom;
-      const keyboardInset = Math.max(0, window.innerHeight - visualBottom);
-      const keyboardOpen = keyboardInset > 80;
-      if (!keyboardOpen) {
-        this.mobileClosedComposerGap = Math.max(0, paneBottom - inputBottom);
-        this.mobileBottomChromeHeight = Math.max(0, window.innerHeight - paneBottom);
-      }
-      const shift = keyboardOpen ? this.mobileBottomChromeHeight : 0;
-      const available = Math.max(220, paneBottom - rect.top);
+      const available = Math.max(220, Math.min(visualBottom, paneBottom) - rect.top);
       container.style.setProperty("--nullclaw-view-height", `${available}px`);
-      container.style.setProperty("--nullclaw-ime-shift", `${shift}px`);
       container.style.height = `${available}px`;
       container.style.maxHeight = `${available}px`;
-      let node = container;
-      for (let i = 0; node && i < 5; i++, node = node.parentElement) {
-        node.style.overflow = keyboardOpen ? "visible" : "hidden";
-      }
       if (parent) {
         parent.style.height = `${available}px`;
         parent.style.maxHeight = `${available}px`;
       }
     };
+    const activateImeShift = () => {
+      this.imeFocusShift = measureClosedShift();
+      container.style.setProperty("--nullclaw-ime-shift", `${this.imeFocusShift}px`);
+      container.addClass("nullclaw-ime-active");
+      setAncestorOverflow(true);
+      apply();
+      setTimeout(() => {
+        container.style.setProperty("--nullclaw-ime-shift", `${this.imeFocusShift}px`);
+        apply();
+      }, 80);
+      setTimeout(() => {
+        container.style.setProperty("--nullclaw-ime-shift", `${this.imeFocusShift}px`);
+        apply();
+      }, 260);
+    };
+    const deactivateImeShift = () => {
+      container.removeClass("nullclaw-ime-active");
+      container.style.setProperty("--nullclaw-ime-shift", "0px");
+      setAncestorOverflow(false);
+      setTimeout(apply, 80);
+    };
     this.viewportResizeHandler = apply;
     window.visualViewport?.addEventListener("resize", apply);
     window.visualViewport?.addEventListener("scroll", apply);
     window.addEventListener("resize", apply);
-    this.inputEl.addEventListener("focus", () => setTimeout(apply, 80));
-    this.inputEl.addEventListener("focus", () => setTimeout(apply, 260));
-    this.inputEl.addEventListener("blur", () => setTimeout(apply, 80));
+    this.inputEl.addEventListener("focus", activateImeShift);
+    this.inputEl.addEventListener("blur", deactivateImeShift);
     setTimeout(apply, 50);
     setTimeout(apply, 300);
   }

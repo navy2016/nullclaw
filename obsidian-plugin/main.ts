@@ -27,6 +27,7 @@ class NullclawView extends ItemView {
   private viewportResizeHandler?: () => void;
   private mobileClosedComposerGap = 0;
   private mobileBottomChromeHeight = 0;
+  private imeFocusShift = 0;
   private attachedRefs: string[] = [];
 
   constructor(leaf: WorkspaceLeaf, settings: NullClawSettings) {
@@ -410,6 +411,23 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
   }
 
   private setupMobileViewport(container: HTMLElement) {
+    const setAncestorOverflow = (visible: boolean) => {
+      let node: HTMLElement | null = container;
+      for (let i = 0; node && i < 8; i++, node = node.parentElement as HTMLElement | null) {
+        node.style.overflow = visible ? 'visible' : 'hidden';
+      }
+    };
+
+    const measureClosedShift = () => {
+      const inputRow = this.inputEl?.parentElement as HTMLElement | null;
+      if (!inputRow) return 0;
+      const inputBottom = inputRow.getBoundingClientRect().bottom;
+      // Direct measurement: the visible gap under the composer while keyboard is closed.
+      // This includes Obsidian mobile bottom chrome + the normal gap. Moving by this value
+      // makes the composer descend into that chrome area when IME opens.
+      return Math.max(0, window.innerHeight - inputBottom - 4);
+    };
+
     const apply = () => {
       const vv = window.visualViewport;
       const rect = container.getBoundingClientRect();
@@ -419,45 +437,43 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
       const composerHeight = statusHeight + inputHeight;
       container.style.setProperty('--nullclaw-composer-height', `${composerHeight}px`);
 
+      // Keep the pane internally stable. The actual IME correction is done by transform.
       const visualBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
       const paneBottom = parent ? parent.getBoundingClientRect().bottom : rect.bottom;
-      const inputRow = this.inputEl?.parentElement as HTMLElement | null;
-      const inputBottom = inputRow?.getBoundingClientRect().bottom ?? rect.bottom;
-      const keyboardInset = Math.max(0, window.innerHeight - visualBottom);
-      const keyboardOpen = keyboardInset > 80;
-
-      // Closed-state measurements.
-      if (!keyboardOpen) {
-        this.mobileClosedComposerGap = Math.max(0, paneBottom - inputBottom);
-        this.mobileBottomChromeHeight = Math.max(0, window.innerHeight - paneBottom);
-      }
-
-      // Keep pane layout stable, but visually lower the composer by exactly
-      // Obsidian Mobile's bottom chrome height while IME is open.
-      const shift = keyboardOpen ? this.mobileBottomChromeHeight : 0;
-      const available = Math.max(220, paneBottom - rect.top);
+      const available = Math.max(220, Math.min(visualBottom, paneBottom) - rect.top);
       container.style.setProperty('--nullclaw-view-height', `${available}px`);
-      container.style.setProperty('--nullclaw-ime-shift', `${shift}px`);
       container.style.height = `${available}px`;
       container.style.maxHeight = `${available}px`;
-
-      // Allow the transformed composer to draw into Obsidian's bottom chrome area.
-      let node: HTMLElement | null = container;
-      for (let i = 0; node && i < 5; i++, node = node.parentElement as HTMLElement | null) {
-        node.style.overflow = keyboardOpen ? 'visible' : 'hidden';
-      }
       if (parent) {
         parent.style.height = `${available}px`;
         parent.style.maxHeight = `${available}px`;
       }
     };
+
+    const activateImeShift = () => {
+      // Delay once so Android/Obsidian has applied focus styles, but measure mostly pre-IME.
+      this.imeFocusShift = measureClosedShift();
+      container.style.setProperty('--nullclaw-ime-shift', `${this.imeFocusShift}px`);
+      container.addClass('nullclaw-ime-active');
+      setAncestorOverflow(true);
+      apply();
+      setTimeout(() => { container.style.setProperty('--nullclaw-ime-shift', `${this.imeFocusShift}px`); apply(); }, 80);
+      setTimeout(() => { container.style.setProperty('--nullclaw-ime-shift', `${this.imeFocusShift}px`); apply(); }, 260);
+    };
+
+    const deactivateImeShift = () => {
+      container.removeClass('nullclaw-ime-active');
+      container.style.setProperty('--nullclaw-ime-shift', '0px');
+      setAncestorOverflow(false);
+      setTimeout(apply, 80);
+    };
+
     this.viewportResizeHandler = apply;
     window.visualViewport?.addEventListener('resize', apply);
     window.visualViewport?.addEventListener('scroll', apply);
     window.addEventListener('resize', apply);
-    this.inputEl.addEventListener('focus', () => setTimeout(apply, 80));
-    this.inputEl.addEventListener('focus', () => setTimeout(apply, 260));
-    this.inputEl.addEventListener('blur', () => setTimeout(apply, 80));
+    this.inputEl.addEventListener('focus', activateImeShift);
+    this.inputEl.addEventListener('blur', deactivateImeShift);
     setTimeout(apply, 50);
     setTimeout(apply, 300);
   }

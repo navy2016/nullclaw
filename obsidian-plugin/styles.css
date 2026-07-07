@@ -113,3 +113,15 @@ body.is-mobile .nullclaw-input-row {
 body.is-mobile .nullclaw-output {
   padding-bottom: calc(12px + var(--nullclaw-ime-shift, 0px));
 }
+
+/* Force IME composer shift on focus. Does not depend on body.is-mobile or visualViewport. */
+.nullclaw-terminal.nullclaw-ime-active .nullclaw-status,
+.nullclaw-terminal.nullclaw-ime-active .nullclaw-input-row {
+  transform: translateY(var(--nullclaw-ime-shift, 0px)) !important;
+  transition: transform 80ms linear;
+  position: relative;
+  z-index: 99999;
+}
+.nullclaw-terminal.nullclaw-ime-active .nullclaw-output {
+  padding-bottom: calc(12px + var(--nullclaw-ime-shift, 0px));
+}
