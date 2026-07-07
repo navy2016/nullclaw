@@ -101,3 +101,15 @@ body.is-mobile .nullclaw-input-row {
 body.is-mobile .nullclaw-status {
   padding-bottom: 1px;
 }
+
+/* IME visual shift: move composer into Obsidian mobile bottom chrome only while keyboard is open. */
+body.is-mobile .nullclaw-status,
+body.is-mobile .nullclaw-input-row {
+  transform: translateY(var(--nullclaw-ime-shift, 0px));
+  transition: transform 120ms ease-out;
+  position: relative;
+  z-index: 20;
+}
+body.is-mobile .nullclaw-output {
+  padding-bottom: calc(12px + var(--nullclaw-ime-shift, 0px));
+}

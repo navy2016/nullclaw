@@ -26,6 +26,7 @@ class NullclawView extends ItemView {
   private messages: Array<{ role: 'system' | 'user' | 'assistant' | 'tool'; content: string; name?: string; tool_call_id?: string }> = [];
   private viewportResizeHandler?: () => void;
   private mobileClosedComposerGap = 0;
+  private mobileBottomChromeHeight = 0;
   private attachedRefs: string[] = [];
 
   constructor(leaf: WorkspaceLeaf, settings: NullClawSettings) {
@@ -425,22 +426,29 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
       const keyboardInset = Math.max(0, window.innerHeight - visualBottom);
       const keyboardOpen = keyboardInset > 80;
 
-      // Stable target: preserve the same bottom gap the user sees when IME is closed.
-      // Closed: gap = paneBottom - inputBottom.
-      // Open:   desiredInputBottom = visualBottom - closedGap.
-      // Since status/input are in grid flow, terminal bottom ~= input bottom.
+      // Closed-state measurements.
       if (!keyboardOpen) {
         this.mobileClosedComposerGap = Math.max(0, paneBottom - inputBottom);
+        this.mobileBottomChromeHeight = Math.max(0, window.innerHeight - paneBottom);
       }
-      const desiredBottom = keyboardOpen ? (visualBottom - this.mobileClosedComposerGap) : paneBottom;
-      const available = Math.max(220, desiredBottom - rect.top);
+
+      // Keep pane layout stable, but visually lower the composer by exactly
+      // Obsidian Mobile's bottom chrome height while IME is open.
+      const shift = keyboardOpen ? this.mobileBottomChromeHeight : 0;
+      const available = Math.max(220, paneBottom - rect.top);
       container.style.setProperty('--nullclaw-view-height', `${available}px`);
+      container.style.setProperty('--nullclaw-ime-shift', `${shift}px`);
       container.style.height = `${available}px`;
       container.style.maxHeight = `${available}px`;
+
+      // Allow the transformed composer to draw into Obsidian's bottom chrome area.
+      let node: HTMLElement | null = container;
+      for (let i = 0; node && i < 5; i++, node = node.parentElement as HTMLElement | null) {
+        node.style.overflow = keyboardOpen ? 'visible' : 'hidden';
+      }
       if (parent) {
         parent.style.height = `${available}px`;
         parent.style.maxHeight = `${available}px`;
-        parent.style.overflow = 'hidden';
       }
     };
     this.viewportResizeHandler = apply;

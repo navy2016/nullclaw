@@ -504,6 +504,7 @@ var NullclawView = class extends import_obsidian.ItemView {
     this.running = false;
     this.messages = [];
     this.mobileClosedComposerGap = 0;
+    this.mobileBottomChromeHeight = 0;
     this.attachedRefs = [];
     this.settings = settings;
   }
@@ -895,16 +896,21 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
       const keyboardOpen = keyboardInset > 80;
       if (!keyboardOpen) {
         this.mobileClosedComposerGap = Math.max(0, paneBottom - inputBottom);
+        this.mobileBottomChromeHeight = Math.max(0, window.innerHeight - paneBottom);
       }
-      const desiredBottom = keyboardOpen ? visualBottom - this.mobileClosedComposerGap : paneBottom;
-      const available = Math.max(220, desiredBottom - rect.top);
+      const shift = keyboardOpen ? this.mobileBottomChromeHeight : 0;
+      const available = Math.max(220, paneBottom - rect.top);
       container.style.setProperty("--nullclaw-view-height", `${available}px`);
+      container.style.setProperty("--nullclaw-ime-shift", `${shift}px`);
       container.style.height = `${available}px`;
       container.style.maxHeight = `${available}px`;
+      let node = container;
+      for (let i = 0; node && i < 5; i++, node = node.parentElement) {
+        node.style.overflow = keyboardOpen ? "visible" : "hidden";
+      }
       if (parent) {
         parent.style.height = `${available}px`;
         parent.style.maxHeight = `${available}px`;
-        parent.style.overflow = "hidden";
       }
     };
     this.viewportResizeHandler = apply;
