@@ -25,7 +25,7 @@ class NullclawView extends ItemView {
   private settings: NullClawSettings;
   private messages: Array<{ role: 'system' | 'user' | 'assistant' | 'tool'; content: string; name?: string; tool_call_id?: string }> = [];
   private viewportResizeHandler?: () => void;
-  private mobileBottomChromeHeight = 0;
+  private mobileClosedComposerGap = 0;
   private attachedRefs: string[] = [];
 
   constructor(leaf: WorkspaceLeaf, settings: NullClawSettings) {
@@ -420,22 +420,20 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
 
       const visualBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
       const paneBottom = parent ? parent.getBoundingClientRect().bottom : rect.bottom;
+      const inputRow = this.inputEl?.parentElement as HTMLElement | null;
+      const inputBottom = inputRow?.getBoundingClientRect().bottom ?? rect.bottom;
       const keyboardInset = Math.max(0, window.innerHeight - visualBottom);
       const keyboardOpen = keyboardInset > 80;
 
-      // Obsidian Mobile has its own bottom chrome/card below the plugin pane.
-      // When IME is closed, measure that chrome height once:
-      //   bottomChrome = viewport bottom - pane bottom.
-      // When IME opens, the pane bottom remains at the old top of Obsidian chrome,
-      // so the composer floats above the keyboard by exactly that chrome height.
-      // Fix: only while keyboard is open, allow the pane target bottom to descend
-      // by the measured chrome height, but never past the visual viewport bottom.
+      // Stable target: preserve the same bottom gap the user sees when IME is closed.
+      // Closed: gap = paneBottom - inputBottom.
+      // Open:   desiredInputBottom = visualBottom - closedGap.
+      // Since status/input are in grid flow, terminal bottom ~= input bottom.
       if (!keyboardOpen) {
-        this.mobileBottomChromeHeight = Math.max(0, window.innerHeight - paneBottom);
+        this.mobileClosedComposerGap = Math.max(0, paneBottom - inputBottom);
       }
-      const correctedPaneBottom = keyboardOpen ? paneBottom + this.mobileBottomChromeHeight : paneBottom;
-      const effectiveBottom = Math.min(visualBottom, correctedPaneBottom);
-      const available = Math.max(220, effectiveBottom - rect.top);
+      const desiredBottom = keyboardOpen ? (visualBottom - this.mobileClosedComposerGap) : paneBottom;
+      const available = Math.max(220, desiredBottom - rect.top);
       container.style.setProperty('--nullclaw-view-height', `${available}px`);
       container.style.height = `${available}px`;
       container.style.maxHeight = `${available}px`;

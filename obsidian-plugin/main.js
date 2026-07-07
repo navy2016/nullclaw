@@ -503,7 +503,7 @@ var NullclawView = class extends import_obsidian.ItemView {
     this.wasmBytes = null;
     this.running = false;
     this.messages = [];
-    this.mobileBottomChromeHeight = 0;
+    this.mobileClosedComposerGap = 0;
     this.attachedRefs = [];
     this.settings = settings;
   }
@@ -889,14 +889,15 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
       container.style.setProperty("--nullclaw-composer-height", `${composerHeight}px`);
       const visualBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
       const paneBottom = parent ? parent.getBoundingClientRect().bottom : rect.bottom;
+      const inputRow = this.inputEl?.parentElement;
+      const inputBottom = inputRow?.getBoundingClientRect().bottom ?? rect.bottom;
       const keyboardInset = Math.max(0, window.innerHeight - visualBottom);
       const keyboardOpen = keyboardInset > 80;
       if (!keyboardOpen) {
-        this.mobileBottomChromeHeight = Math.max(0, window.innerHeight - paneBottom);
+        this.mobileClosedComposerGap = Math.max(0, paneBottom - inputBottom);
       }
-      const correctedPaneBottom = keyboardOpen ? paneBottom + this.mobileBottomChromeHeight : paneBottom;
-      const effectiveBottom = Math.min(visualBottom, correctedPaneBottom);
-      const available = Math.max(220, effectiveBottom - rect.top);
+      const desiredBottom = keyboardOpen ? visualBottom - this.mobileClosedComposerGap : paneBottom;
+      const available = Math.max(220, desiredBottom - rect.top);
       container.style.setProperty("--nullclaw-view-height", `${available}px`);
       container.style.height = `${available}px`;
       container.style.maxHeight = `${available}px`;
