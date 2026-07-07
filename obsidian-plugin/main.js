@@ -503,6 +503,7 @@ var NullclawView = class extends import_obsidian.ItemView {
     this.wasmBytes = null;
     this.running = false;
     this.messages = [];
+    this.mobileBottomChromeHeight = 0;
     this.attachedRefs = [];
     this.settings = settings;
   }
@@ -888,7 +889,13 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
       container.style.setProperty("--nullclaw-composer-height", `${composerHeight}px`);
       const visualBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
       const paneBottom = parent ? parent.getBoundingClientRect().bottom : rect.bottom;
-      const effectiveBottom = Math.min(visualBottom, paneBottom);
+      const keyboardInset = Math.max(0, window.innerHeight - visualBottom);
+      const keyboardOpen = keyboardInset > 80;
+      if (!keyboardOpen) {
+        this.mobileBottomChromeHeight = Math.max(0, window.innerHeight - paneBottom);
+      }
+      const correctedPaneBottom = keyboardOpen ? paneBottom + this.mobileBottomChromeHeight : paneBottom;
+      const effectiveBottom = Math.min(visualBottom, correctedPaneBottom);
       const available = Math.max(220, effectiveBottom - rect.top);
       container.style.setProperty("--nullclaw-view-height", `${available}px`);
       container.style.height = `${available}px`;
