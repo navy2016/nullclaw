@@ -28,6 +28,7 @@ class NullclawView extends ItemView {
   private mobileClosedComposerGap = 0;
   private mobileBottomChromeHeight = 0;
   private imeFocusShift = 0;
+  private closedVisualHeight = 0;
   private attachedRefs: string[] = [];
 
   constructor(leaf: WorkspaceLeaf, settings: NullClawSettings) {
@@ -411,37 +412,48 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
   }
 
   private setupMobileViewport(container: HTMLElement) {
+    let imeActive = false;
+
     const setAncestorOverflow = (visible: boolean) => {
       let node: HTMLElement | null = container;
       for (let i = 0; node && i < 8; i++, node = node.parentElement as HTMLElement | null) {
-        node.style.overflow = visible ? 'visible' : 'hidden';
+        if (visible) node.style.overflow = 'visible';
       }
     };
+
+    const currentVisualHeight = () => window.visualViewport?.height ?? window.innerHeight;
 
     const measureClosedShift = () => {
       const inputRow = this.inputEl?.parentElement as HTMLElement | null;
       if (!inputRow) return 0;
-      const inputBottom = inputRow.getBoundingClientRect().bottom;
-      // Direct measurement: the visible gap under the composer while keyboard is closed.
-      // This includes Obsidian mobile bottom chrome + the normal gap. Moving by this value
-      // makes the composer descend into that chrome area when IME opens.
-      return Math.max(0, window.innerHeight - inputBottom - 4);
+      const inputRect = inputRow.getBoundingClientRect();
+      const rawGap = Math.max(0, window.innerHeight - inputRect.bottom - 4);
+      // Empirically on Obsidian Android, terminal is shrunk to above Obsidian's bottom card
+      // when IME opens. Expanding by roughly this value moves both output bottom and composer
+      // down together. Subtract input height so the input row stays above keyboard toolbar.
+      return Math.max(0, rawGap - inputRect.height - 8);
     };
 
     const apply = () => {
-      const vv = window.visualViewport;
       const rect = container.getBoundingClientRect();
       const parent = container.parentElement as HTMLElement | null;
+      const paneBottom = parent ? parent.getBoundingClientRect().bottom : rect.bottom;
       const statusHeight = this.statusText?.parentElement?.getBoundingClientRect().height ?? 22;
       const inputHeight = this.inputEl?.parentElement?.getBoundingClientRect().height ?? 48;
       const composerHeight = statusHeight + inputHeight;
       container.style.setProperty('--nullclaw-composer-height', `${composerHeight}px`);
 
-      // Keep the pane internally stable. The actual IME correction is done by transform.
-      const visualBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
-      const paneBottom = parent ? parent.getBoundingClientRect().bottom : rect.bottom;
-      const available = Math.max(220, Math.min(visualBottom, paneBottom) - rect.top);
+      // Keyboard collapse can happen without blur. Detect collapse by visualViewport height
+      // returning near the height seen before focus. Do NOT use keyboardInset: Obsidian may
+      // resize window.innerHeight, making inset look like 0 while keyboard is open.
+      if (imeActive && this.closedVisualHeight > 0 && currentVisualHeight() >= this.closedVisualHeight - 36) {
+        deactivateImeShift();
+      }
+
+      const baseAvailable = Math.max(220, paneBottom - rect.top);
+      const available = baseAvailable + (imeActive ? this.imeFocusShift : 0);
       container.style.setProperty('--nullclaw-view-height', `${available}px`);
+      container.style.setProperty('--nullclaw-ime-shift', `${imeActive ? this.imeFocusShift : 0}px`);
       container.style.height = `${available}px`;
       container.style.maxHeight = `${available}px`;
       if (parent) {
@@ -451,21 +463,21 @@ ${message}`].filter(Boolean).join('\n\n---\n\n');
     };
 
     const activateImeShift = () => {
-      // Delay once so Android/Obsidian has applied focus styles, but measure mostly pre-IME.
+      this.closedVisualHeight = currentVisualHeight();
       this.imeFocusShift = measureClosedShift();
-      container.style.setProperty('--nullclaw-ime-shift', `${this.imeFocusShift}px`);
+      imeActive = true;
       container.addClass('nullclaw-ime-active');
       setAncestorOverflow(true);
       apply();
-      setTimeout(() => { container.style.setProperty('--nullclaw-ime-shift', `${this.imeFocusShift}px`); apply(); }, 80);
-      setTimeout(() => { container.style.setProperty('--nullclaw-ime-shift', `${this.imeFocusShift}px`); apply(); }, 260);
+      setTimeout(() => { if (imeActive) apply(); }, 80);
+      setTimeout(() => { if (imeActive) apply(); }, 260);
     };
 
     const deactivateImeShift = () => {
+      imeActive = false;
       container.removeClass('nullclaw-ime-active');
       container.style.setProperty('--nullclaw-ime-shift', '0px');
-      setAncestorOverflow(false);
-      setTimeout(apply, 80);
+      setTimeout(apply, 50);
     };
 
     this.viewportResizeHandler = apply;

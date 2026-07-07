@@ -125,3 +125,12 @@ body.is-mobile .nullclaw-output {
 .nullclaw-terminal.nullclaw-ime-active .nullclaw-output {
   padding-bottom: calc(12px + var(--nullclaw-ime-shift, 0px));
 }
+
+/* Height-expansion IME mode: output and composer move together. Disable old transform shift. */
+.nullclaw-terminal.nullclaw-ime-active .nullclaw-status,
+.nullclaw-terminal.nullclaw-ime-active .nullclaw-input-row {
+  transform: none !important;
+}
+.nullclaw-terminal.nullclaw-ime-active .nullclaw-output {
+  padding-bottom: 12px !important;
+}
