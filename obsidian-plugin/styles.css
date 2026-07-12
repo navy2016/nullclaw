@@ -257,3 +257,19 @@ body.is-mobile .nullclaw-input-wrap {
 .nc-memory-actions { display:flex; justify-content:flex-end; gap:7px; margin-top:7px; }
 .nc-memory-card.is-approved { outline:1px solid var(--text-success); opacity:.78; }
 .nc-memory-card.is-rejected { opacity:.48; }
+
+/* Session overlay is mounted outside the scroll output so outputEl.empty() cannot detach it. */
+.nullclaw-terminal { position: relative; }
+.nc-session-panel {
+  position: absolute;
+  inset: 8px 8px calc(var(--nullclaw-composer-height, 72px) + 16px) 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  z-index: 100020;
+}
+.nc-session-search { width:100%; box-sizing:border-box; margin:6px 0; padding:7px 9px; }
+.nc-session-list { overflow-y:auto; min-height:0; }
+.nc-session-actions { display:flex; gap:5px; align-items:center; padding:4px 0 0 8px; }
+.nc-session-actions input { min-width:0; flex:1; }
+.nc-session-empty { color:var(--text-muted); padding:12px; text-align:center; }

@@ -74,6 +74,7 @@ class NullclawView extends ItemView {
   private closedVisualHeight = 0;
   private attachedRefs: string[] = [];
   private attachedSelection = '';
+  private contextStats: Record<string, number> = {};
 
   constructor(leaf: WorkspaceLeaf, settings: NullClawSettings) {
     super(leaf);
@@ -89,7 +90,7 @@ class NullclawView extends ItemView {
     c.empty();
     c.addClass('nullclaw-terminal');
     this.outputEl = c.createDiv({ cls: 'nullclaw-output' });
-    this.sessionEl = this.outputEl.createDiv({ cls: 'nc-session-panel' });
+    this.sessionEl = c.createDiv({ cls: 'nc-session-panel' });
     this.sessionEl.hidden = true;
     const inputWrap = c.createDiv({ cls: 'nullclaw-input-wrap' });
     this.refsEl = inputWrap.createDiv({ cls: 'nullclaw-refs' });
@@ -105,7 +106,7 @@ class NullclawView extends ItemView {
     this.statusDot = st.createSpan({ cls: 'nc-dot nc-dot-error' });
     this.statusText = st.createSpan({ text: 'Loading nullclaw.wasm...' });
     const sessionsButton = st.createEl('button', { cls: 'nc-session-button', text: 'Sessions' });
-    sessionsButton.addEventListener('click', () => void this.toggleSessionPanel());
+    sessionsButton.addEventListener('click', () => { void this.toggleSessionPanel().catch((e:any)=>this.println(`Sessions error: ${e.message}`,'nc-error')); });
 
     await this.loadWasm();
     await this.restoreSession();
@@ -210,6 +211,8 @@ class NullclawView extends ItemView {
     if (cmd === 'session-new') { await this.newSession(args.slice(1).join(' ') || undefined); return; }
     if (cmd === 'session-switch') { if (!args[1]) return this.println('Usage: /session-switch <id>', 'nc-error'); await this.switchSession(args[1]); return; }
     if (cmd === 'session-delete') { if (!args[1]) return this.println('Usage: /session-delete <id>', 'nc-error'); await this.deleteSession(args[1]); return; }
+    if (cmd === 'session-rename') { if (!args[1] || args.length < 3) return this.println('Usage: /session-rename <id> <title>', 'nc-error'); await this.renameSession(args[1], args.slice(2).join(' ')); return; }
+    if (cmd === 'session-export') { if (!args[1]) return this.println('Usage: /session-export <id>', 'nc-error'); await this.exportSession(args[1]); return; }
     if (cmd === 'clear') {
       this.messages = [];
       this.sessionSummary = '';
@@ -222,6 +225,7 @@ class NullclawView extends ItemView {
       return;
     }
     if (cmd === 'compact') { await this.skillCompact(); return; }
+    if (cmd === 'context') { this.showContextStats(); return; }
     if (cmd === 'digest-current') { await this.skillDigestCurrent(); return; }
     if (cmd === 'review-inbox') { await this.skillReviewInbox(); return; }
     if (cmd === 'apply-memory') { await this.skillApplyMemory(args.slice(1).includes('--yes')); return; }
@@ -388,6 +392,20 @@ class NullclawView extends ItemView {
     if (!result.stdout && !result.stderr) this.println(`(exit: ${result.exitCode})`, 'nc-info');
   }
 
+  private limitText(text:string,max:number):string {
+    if(text.length<=max)return text;const half=Math.floor((max-80)/2);return `${text.slice(0,half)}\n\n… [${text.length-max} chars omitted] …\n\n${text.slice(-half)}`;
+  }
+
+  private budgetHistory(messages:ChatMessage[],maxChars:number):ChatMessage[] {
+    const selected:ChatMessage[]=[];let used=0;
+    for(let i=messages.length-1;i>=0;i--){const m=messages[i];const size=m.content.length+32;if(selected.length>=24||used+size>maxChars)break;selected.unshift(m);used+=size;}
+    return selected;
+  }
+
+  private showContextStats(){const total=Object.values(this.contextStats).reduce((a,b)=>a+b,0);this.println(`Context budget (~${Math.ceil(total/4)} tokens / ${total} chars):\n${Object.entries(this.contextStats).map(([k,v])=>`- ${k}: ${v} chars`).join('\n')}`,'nc-info');}
+
+  private updateContextStatus(){const chars=Object.values(this.contextStats).reduce((a,b)=>a+b,0);if(this.running)this.statusText.textContent=`Running · ~${Math.ceil(chars/4)} ctx tokens`;}
+
   private async callLLM(message: string): Promise<string | null> {
     this.responseWasStreamed = false;
     this.compatibilityNoticeShown = false;
@@ -398,11 +416,14 @@ class NullclawView extends ItemView {
     };
 
     await this.ensureMemoryScaffold();
-    const palaceContext = await this.loadPalaceContext(message);
-    const refContext = await this.resolveMessageReferences(message);
-    const retrievalContext = (!this.attachedRefs.length && !this.attachedSelection) ? await this.retrieveContext(message, 6) : '';
-    const enriched = [this.sessionSummary ? `Compressed session context:\n${this.sessionSummary}` : '', palaceContext, refContext, retrievalContext, `User message:\n${message}`].filter(Boolean).join('\n\n---\n\n');
-    const history = this.messages.slice(-20);
+    const palaceContext = this.limitText(await this.loadPalaceContext(message), 18000);
+    const refContext = this.limitText(await this.resolveMessageReferences(message), 30000);
+    const retrievalContext = (!this.attachedRefs.length && !this.attachedSelection) ? this.limitText(await this.retrieveContext(message, 6), 10000) : '';
+    const summaryContext = this.limitText(this.sessionSummary ? `Compressed session context:\n${this.sessionSummary}` : '', 10000);
+    const history = this.budgetHistory(this.messages, 28000);
+    const enriched = [summaryContext, palaceContext, refContext, retrievalContext, `User message:\n${message}`].filter(Boolean).join('\n\n---\n\n');
+    this.contextStats={summary:summaryContext.length,palace:palaceContext.length,references:refContext.length,retrieval:retrievalContext.length,history:history.reduce((n,m)=>n+m.content.length,0),user:message.length};
+    this.updateContextStatus();
     const conversation: any[] = [system, ...history, { role: 'user', content: enriched }];
     const tools = this.toolSchemas();
 
@@ -905,7 +926,7 @@ ${ctx.text.slice(0, 24000)}` : 'No active markdown note.';
   }
 
   private async ensureMemoryScaffold() {
-    const dirs = ['raw', 'sources', 'memory', 'memory/inbox', 'memory/inbox/candidates', 'memory/feedback', 'memory/applied', 'people', 'projects', 'wiki', 'decisions', 'daily', 'palace', '.nullclaw', '.nullclaw/sessions', '.nullclaw/skills'];
+    const dirs = ['raw', 'sources', 'memory', 'memory/inbox', 'memory/inbox/candidates', 'memory/feedback', 'memory/applied', 'people', 'projects', 'wiki', 'decisions', 'daily', 'palace', '.nullclaw', '.nullclaw/sessions', '.nullclaw/sessions/exports', '.nullclaw/skills'];
     for (const d of dirs) {
       try {
         if (!(await this.app.vault.adapter.exists(d))) await this.app.vault.adapter.mkdir(d);
@@ -1390,7 +1411,15 @@ ${this.attachedSelection}`);
     return items.sort((a,b) => b.updatedAt - a.updatedAt);
   }
 
+  private ensureSessionPanelMounted() {
+    const root=this.containerEl.children[1] as HTMLElement;
+    if(!this.sessionEl?.isConnected || this.sessionEl.parentElement!==root) {
+      this.sessionEl=root.createDiv({cls:'nc-session-panel'}); this.sessionEl.hidden=true;
+    }
+  }
+
   private async toggleSessionPanel(forceOpen?: boolean) {
+    this.ensureSessionPanelMounted();
     const open = forceOpen ?? this.sessionEl.hidden;
     if (!open) { this.sessionEl.hidden = true; this.sessionEl.empty(); return; }
     this.sessionEl.empty(); this.sessionEl.hidden = false;
@@ -1398,21 +1427,46 @@ ${this.attachedSelection}`);
     head.createSpan({ text: 'Sessions' });
     const create = head.createEl('button', { text: '+ New' }); create.addEventListener('click', () => void this.newSession());
     const close = head.createEl('button', { text: '×' }); close.addEventListener('click', () => { this.sessionEl.hidden = true; });
-    for (const item of await this.loadSessionIndex()) {
-      const row = this.sessionEl.createDiv({ cls: `nc-session-row${item.id === this.sessionId ? ' is-active' : ''}` });
-      const main = row.createDiv({ cls: 'nc-session-main' });
-      main.createDiv({ cls: 'nc-session-title', text: item.title });
-      main.createDiv({ cls: 'nc-session-meta', text: `${item.messageCount} messages · ${new Date(item.updatedAt).toLocaleString()}` });
-      main.addEventListener('click', () => void this.switchSession(item.id));
-      const del = row.createEl('button', { text: 'Delete' }); del.addEventListener('click', () => void this.deleteSession(item.id));
-    }
+    const search=this.sessionEl.createEl('input',{cls:'nc-session-search',attr:{type:'search',placeholder:'Search sessions…'}});
+    const list=this.sessionEl.createDiv({cls:'nc-session-list'});
+    let items:SessionIndexItem[]=[];
+    try { items=await this.loadSessionIndex(); }
+    catch(e:any) { list.createDiv({cls:'nc-session-empty',text:`Failed to load sessions: ${e.message}`}); return; }
+    const render=(query='')=>{
+      list.empty();const q=query.toLowerCase().trim();
+      for (const item of items.filter(x=>!q||x.title.toLowerCase().includes(q)||x.id.toLowerCase().includes(q))) {
+        const row = list.createDiv({ cls: `nc-session-row${item.id === this.sessionId ? ' is-active' : ''}` });
+        const main = row.createDiv({ cls: 'nc-session-main' });
+        main.createDiv({ cls: 'nc-session-title', text: item.title });
+        main.createDiv({ cls: 'nc-session-meta', text: `${item.messageCount} messages · ${new Date(item.updatedAt).toLocaleString()}` });
+        main.addEventListener('click', () => void this.switchSession(item.id));
+        const more=row.createEl('button',{text:'⋮'});
+        more.addEventListener('click',()=>this.showSessionActions(row,item));
+      }
+      if(!list.children.length)list.createDiv({cls:'nc-session-empty',text:'No sessions.'});
+    };
+    search.addEventListener('input',()=>render(search.value));render();
+  }
+
+  private showSessionActions(row:HTMLElement,item:SessionIndexItem) {
+    row.querySelector('.nc-session-actions')?.remove();
+    const actions=row.createDiv({cls:'nc-session-actions'});
+    const rename=actions.createEl('button',{text:'Rename'});
+    const exp=actions.createEl('button',{text:'Export'});
+    const del=actions.createEl('button',{text:'Delete'});
+    rename.addEventListener('click',()=>{
+      actions.empty();const input=actions.createEl('input',{attr:{value:item.title}});const save=actions.createEl('button',{text:'Save'});
+      save.addEventListener('click',()=>void this.renameSession(item.id,input.value));
+    });
+    exp.addEventListener('click',()=>void this.exportSession(item.id));
+    del.addEventListener('click',()=>void this.deleteSession(item.id));
   }
 
   private async newSession(title?: string) {
     await this.saveSession();
     this.sessionId = `session-${Date.now()}`;
     this.messages = []; this.sessionSummary = ''; this.attachedRefs = []; this.attachedSelection = '';
-    this.outputEl.empty(); this.renderRefs();
+    this.outputEl.empty(); this.ensureSessionPanelMounted(); this.renderRefs();
     if (title) this.messages.push({ role: 'system', content: `Session title: ${title}` });
     await this.saveSession();
     this.println(`New session: ${title || this.sessionId}`, 'nc-info');
@@ -1422,8 +1476,23 @@ ${this.attachedSelection}`);
   private async switchSession(id: string) {
     await this.saveSession();
     this.sessionId = id; this.messages = []; this.sessionSummary = ''; this.attachedRefs = []; this.attachedSelection = '';
-    this.outputEl.empty(); this.sessionEl.hidden = true;
+    this.outputEl.empty(); this.ensureSessionPanelMounted(); this.sessionEl.hidden = true;
     await this.restoreSession();
+  }
+
+  private async renameSession(id:string,title:string) {
+    const path=`.nullclaw/sessions/${id}.json`;if(!(await this.app.vault.adapter.exists(path)))throw new Error(`Session not found: ${id}`);
+    const data=JSON.parse(await this.app.vault.adapter.read(path)) as SessionData;data.title=title.trim()||data.title;data.updatedAt=Date.now();await this.toolWrite(path,JSON.stringify(data,null,2));
+    if(id===this.sessionId) this.messages=this.messages.filter(m=>!(m.role==='system'&&m.content.startsWith('Session title:')));
+    this.println(`Renamed session to ${data.title}.`,'nc-info');await this.toggleSessionPanel(true);
+  }
+
+  private async exportSession(id:string) {
+    const path=`.nullclaw/sessions/${id}.json`;if(!(await this.app.vault.adapter.exists(path)))throw new Error(`Session not found: ${id}`);
+    const data=JSON.parse(await this.app.vault.adapter.read(path)) as SessionData;
+    const safe=(data.title||id).replace(/[\\/:*?"<>|]/g,'_').slice(0,80);const out=`.nullclaw/sessions/exports/${safe}-${id}.md`;
+    const body=[`# ${data.title||id}`,``, `- Session: ${id}`,`- Updated: ${new Date(data.updatedAt).toISOString()}`,data.summary?`\n## Summary\n\n${data.summary}`:'',...data.messages.filter(m=>m.role==='user'||m.role==='assistant').map(m=>`\n## ${m.role==='user'?'You':'NullClaw'}\n\n${m.content}`)].join('\n');
+    await this.toolWrite(out,body);this.println(`Session exported to ${out}`,'nc-output');
   }
 
   private async deleteSession(id: string) {
