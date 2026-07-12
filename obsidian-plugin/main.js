@@ -508,7 +508,11 @@ var NullclawView = class extends import_obsidian.ItemView {
     this.mentionItems = [];
     this.mentionIndex = 0;
     this.mentionStart = -1;
+    this.skillItems = [];
+    this.skillIndex = 0;
+    this.selectedSkill = null;
     this.responseWasStreamed = false;
+    this.compatibilityNoticeShown = false;
     this.mobileClosedComposerGap = 0;
     this.mobileBottomChromeHeight = 0;
     this.imeFocusShift = 0;
@@ -531,44 +535,81 @@ var NullclawView = class extends import_obsidian.ItemView {
     c.empty();
     c.addClass("nullclaw-terminal");
     this.outputEl = c.createDiv({ cls: "nullclaw-output" });
+    this.sessionEl = this.outputEl.createDiv({ cls: "nc-session-panel" });
+    this.sessionEl.hidden = true;
     const inputWrap = c.createDiv({ cls: "nullclaw-input-wrap" });
     this.refsEl = inputWrap.createDiv({ cls: "nullclaw-refs" });
-    this.refsEl.hide();
+    this.refsEl.hidden = true;
     this.mentionEl = inputWrap.createDiv({ cls: "nullclaw-mention-menu" });
-    this.mentionEl.hide();
+    this.mentionEl.hidden = true;
+    this.skillEl = inputWrap.createDiv({ cls: "nullclaw-skill-menu" });
+    this.skillEl.hidden = true;
     const row = inputWrap.createDiv({ cls: "nullclaw-input-row" });
     row.createSpan({ cls: "nullclaw-input-prompt", text: "\u276F" });
     this.inputEl = row.createEl("input", { cls: "nullclaw-input", attr: { type: "text", placeholder: "\u76F4\u63A5\u8F93\u5165\u53D1\u7ED9 AI\uFF1B\u547D\u4EE4\u7528 /help /version /memory list ..." } });
     const st = c.createDiv({ cls: "nullclaw-status" });
     this.statusDot = st.createSpan({ cls: "nc-dot nc-dot-error" });
     this.statusText = st.createSpan({ text: "Loading nullclaw.wasm..." });
+    const sessionsButton = st.createEl("button", { cls: "nc-session-button", text: "Sessions" });
+    sessionsButton.addEventListener("click", () => void this.toggleSessionPanel());
     await this.loadWasm();
     await this.restoreSession();
-    this.inputEl.addEventListener("input", () => this.updateMentionMenu());
+    this.inputEl.addEventListener("input", () => {
+      this.updateMentionMenu();
+      this.updateSkillMenu();
+    });
     this.inputEl.addEventListener("keydown", (e) => {
-      if (!this.mentionEl.isShown()) {
-        if (e.key === "Enter" && !this.running) this.exec(this.inputEl.value);
+      if (!this.skillEl.hidden) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          this.moveSkill(1);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          this.moveSkill(-1);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          this.closeSkillMenu();
+          return;
+        }
+        if (e.key === "Enter" || e.key === "Tab") {
+          e.preventDefault();
+          this.chooseSkill(this.skillIndex);
+          return;
+        }
+      }
+      if (!this.mentionEl.hidden) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          this.moveMention(1);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          this.moveMention(-1);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          this.closeMentionMenu();
+          return;
+        }
+        if (e.key === "Enter" || e.key === "Tab") {
+          e.preventDefault();
+          this.chooseMention(this.mentionIndex);
+          return;
+        }
+      }
+      if (e.key === "Backspace" && !this.inputEl.value && this.selectedSkill) {
+        e.preventDefault();
+        this.selectedSkill = null;
+        this.renderRefs();
         return;
       }
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        this.moveMention(1);
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        this.moveMention(-1);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        this.closeMentionMenu();
-        return;
-      }
-      if (e.key === "Enter" || e.key === "Tab") {
-        e.preventDefault();
-        this.chooseMention(this.mentionIndex);
-      }
+      if (e.key === "Enter" && !this.running) this.exec(this.inputEl.value);
     });
     this.setupMobileViewport(c);
     this.setupFileDropAndPaste(c);
@@ -601,7 +642,8 @@ var NullclawView = class extends import_obsidian.ItemView {
     }
   }
   async exec(input) {
-    const raw = input.trim();
+    let raw = input.trim();
+    if (this.selectedSkill) raw = `${this.selectedSkill.command}${raw ? " " + raw : ""}`;
     if (!raw || !this.wasmBytes) return;
     this.running = true;
     this.statusDot.className = "nc-dot nc-dot-running";
@@ -622,16 +664,36 @@ var NullclawView = class extends import_obsidian.ItemView {
       this.statusDot.className = "nc-dot nc-dot-ready";
       this.statusText.textContent = "Ready";
       this.inputEl.disabled = false;
+      this.selectedSkill = null;
+      this.renderRefs();
       await this.saveSession();
     }
   }
   async execSlashCommand(command) {
     if (!command) {
-      this.println("Slash commands: /help /version /status /compact /digest-current /review-inbox /apply-memory /vault-doctor /feedback good|bad <text> /current /selection /read /write /append /insert /search /list /clear", "nc-info");
+      this.println("Slash commands: /help /version /status /compact /digest-current /review-inbox /apply-memory /vault-doctor /feedback good|bad <text> /current /selection /read /write /append /insert /search /glob /move /delete /frontmatter /links /link /list /clear", "nc-info");
       return;
     }
     const args = this.parseArgs(command);
     const cmd = args[0];
+    if (cmd === "sessions") {
+      await this.toggleSessionPanel(true);
+      return;
+    }
+    if (cmd === "session-new") {
+      await this.newSession(args.slice(1).join(" ") || void 0);
+      return;
+    }
+    if (cmd === "session-switch") {
+      if (!args[1]) return this.println("Usage: /session-switch <id>", "nc-error");
+      await this.switchSession(args[1]);
+      return;
+    }
+    if (cmd === "session-delete") {
+      if (!args[1]) return this.println("Usage: /session-delete <id>", "nc-error");
+      await this.deleteSession(args[1]);
+      return;
+    }
     if (cmd === "clear") {
       this.messages = [];
       this.sessionSummary = "";
@@ -661,6 +723,14 @@ var NullclawView = class extends import_obsidian.ItemView {
     }
     if (cmd === "vault-doctor") {
       await this.skillVaultDoctor();
+      return;
+    }
+    if (cmd === "update-profile") {
+      await this.skillUpdateProfile();
+      return;
+    }
+    if (cmd === "create-skill") {
+      await this.skillCreateSkill(args.slice(1).join(" "));
       return;
     }
     if (cmd === "feedback") {
@@ -731,6 +801,50 @@ var NullclawView = class extends import_obsidian.ItemView {
       this.println(await this.toolList(args[1] ?? ""), "nc-output");
       return;
     }
+    if (cmd === "glob") {
+      if (!args[1]) return this.println("Usage: /glob <pattern>", "nc-error");
+      this.println(this.toolGlob(args[1]), "nc-output");
+      return;
+    }
+    if (cmd === "move" || cmd === "rename") {
+      if (!args[1] || !args[2]) return this.println("Usage: /move <from> <to>", "nc-error");
+      if (await this.confirmOperation("Move", `${args[1]} \u2192 ${args[2]}`, "Move/rename this path?")) {
+        await this.toolMove(args[1], args[2]);
+        this.println("Moved.", "nc-output");
+      }
+      return;
+    }
+    if (cmd === "delete") {
+      if (!args[1]) return this.println("Usage: /delete <path>", "nc-error");
+      if (await this.confirmOperation("Delete", args[1], "Permanently delete this file?")) {
+        await this.toolDelete(args[1]);
+        this.println("Deleted.", "nc-output");
+      }
+      return;
+    }
+    if (cmd === "frontmatter") {
+      if (!args[1]) return this.println("Usage: /frontmatter <path> [key value]", "nc-error");
+      if (!args[2]) this.println(JSON.stringify(await this.toolFrontmatterRead(args[1]), null, 2), "nc-output");
+      else if (await this.confirmOperation("Frontmatter", args[1], `Set ${args[2]} = ${args.slice(3).join(" ")}`)) {
+        await this.toolFrontmatterSet(args[1], args[2], args.slice(3).join(" "));
+        this.println("Frontmatter updated.", "nc-output");
+      }
+      return;
+    }
+    if (cmd === "links") {
+      if (!args[1]) return this.println("Usage: /links <path>", "nc-error");
+      this.println(await this.toolLinks(args[1]), "nc-output");
+      return;
+    }
+    if (cmd === "link") {
+      if (!args[1] || !args[2]) return this.println("Usage: /link <path> <target> [alias]", "nc-error");
+      const link = `[[${args[2]}${args[3] ? "|" + args[3] : ""}]]`;
+      if (await this.confirmMutation("Append", args[1], link)) {
+        await this.toolAppend(args[1], link);
+        this.println(`Added ${link}`, "nc-output");
+      }
+      return;
+    }
     if (cmd === "agent") {
       let message = "";
       const mIdx = args.indexOf("-m");
@@ -767,8 +881,9 @@ var NullclawView = class extends import_obsidian.ItemView {
     const result = await runNullclaw(
       this.wasmBytes,
       ["agent", "-m", message],
-      this.settings,
-      (text) => this.println(text, "nc-info")
+      { ...this.settings, apiKey: "" },
+      () => {
+      }
     );
     if (result.stdout) {
       const reply = result.stdout.trim();
@@ -780,10 +895,11 @@ var NullclawView = class extends import_obsidian.ItemView {
   }
   async callLLM(message) {
     this.responseWasStreamed = false;
+    this.compatibilityNoticeShown = false;
     const base = (this.settings.apiBase || "https://api.openai.com/v1").replace(/\/$/, "");
     const system = {
       role: "system",
-      content: "You are NullClaw, an AI assistant embedded in Obsidian Android. Maintain context across turns. You can use tools to read, write, append, insert, list and search the current Obsidian vault. Use tools when the user asks about notes/files or wants modifications. Be concise and answer in the user language."
+      content: "You are NullClaw, an AI assistant embedded in Obsidian Android. Maintain context across turns. You can use tools to read, write, append, insert, list and search the current Obsidian vault. Use tools when the user asks about notes/files or wants modifications. Continue calling tools until the task is actually complete, then provide a clear final response. Be concise and answer in the user language."
     };
     await this.ensureMemoryScaffold();
     const palaceContext = await this.loadPalaceContext(message);
@@ -792,41 +908,43 @@ var NullclawView = class extends import_obsidian.ItemView {
 ${this.sessionSummary}` : "", palaceContext, refContext, `User message:
 ${message}`].filter(Boolean).join("\n\n---\n\n");
     const history = this.messages.slice(-20);
-    const requestMessages = [system, ...history, { role: "user", content: enriched }];
+    const conversation = [system, ...history, { role: "user", content: enriched }];
     const tools = this.toolSchemas();
     try {
-      const first = await this.chatCompletionStreaming(base, requestMessages, tools);
-      const msg = first.choices?.[0]?.message;
-      if (!msg) return null;
-      if (msg.tool_calls?.length) {
-        const toolMessages = [...requestMessages, msg];
-        for (const call of msg.tool_calls) {
-          const toolName = call.function?.name;
+      for (let round = 0; round < 8; round++) {
+        const response = await this.chatCompletionStreaming(base, conversation, tools);
+        const assistant = response.choices?.[0]?.message;
+        if (!assistant) throw new Error("Provider returned no assistant message.");
+        conversation.push(assistant);
+        const calls = Array.isArray(assistant.tool_calls) ? assistant.tool_calls : [];
+        if (!calls.length) {
+          const text = assistant.content ?? response.choices?.[0]?.text ?? "";
+          if (!text) throw new Error("Provider returned neither content nor tool calls.");
+          this.remember(message, text);
+          return text;
+        }
+        for (let i = 0; i < calls.length; i++) {
+          const call = calls[i];
+          const toolName = call.function?.name || "unknown_tool";
           const argsRaw = call.function?.arguments || "{}";
           let parsed = {};
           try {
             parsed = JSON.parse(argsRaw);
           } catch {
-            parsed = {};
+            parsed = { raw: argsRaw };
           }
           const result = await this.executeTool(toolName, parsed);
-          toolMessages.push({
+          conversation.push({
             role: "tool",
-            tool_call_id: call.id,
+            tool_call_id: call.id || `tool-${round}-${i}`,
             name: toolName,
             content: result
           });
         }
-        const second = await this.chatCompletionStreaming(base, toolMessages, tools);
-        const finalText = second.choices?.[0]?.message?.content ?? "";
-        this.remember(message, finalText);
-        return finalText || null;
       }
-      const text = msg.content ?? first.choices?.[0]?.text ?? "";
-      this.remember(message, text);
-      return text || null;
+      throw new Error("Agent stopped after 8 tool rounds without a final response.");
     } catch (e) {
-      this.println(`[LLM fetch failed] ${e.message}`, "nc-error");
+      this.println(`[LLM agent failed] ${e.message}`, "nc-error");
       return null;
     }
   }
@@ -898,7 +1016,10 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
     } catch (error) {
       if (card) card.details.remove();
       this.responseWasStreamed = false;
-      this.println("Streaming unavailable; using mobile compatibility mode.", "nc-info");
+      if (!this.compatibilityNoticeShown) {
+        this.compatibilityNoticeShown = true;
+        this.println("Using mobile compatibility mode.", "nc-info");
+      }
       return await this.chatCompletion(base, messages, tools);
     }
   }
@@ -934,14 +1055,27 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
     void this.saveSession();
   }
   toolSchemas() {
+    const f = (name, description, properties, required = []) => ({
+      type: "function",
+      function: { name, description, parameters: { type: "object", properties, ...required.length ? { required } : {} } }
+    });
     return [
-      { type: "function", function: { name: "vault_current_context", description: "Read the currently active Obsidian markdown note and current selection.", parameters: { type: "object", properties: {} } } },
-      { type: "function", function: { name: "vault_search", description: "Search markdown files in the Obsidian vault.", parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } }, required: ["query"] } } },
-      { type: "function", function: { name: "vault_read", description: "Read a file from the Obsidian vault.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
-      { type: "function", function: { name: "vault_write", description: "Overwrite/create a file in the Obsidian vault.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
-      { type: "function", function: { name: "vault_append", description: "Append content to a vault file.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
-      { type: "function", function: { name: "vault_insert", description: "Insert content before/after a marker in a vault file.", parameters: { type: "object", properties: { path: { type: "string" }, marker: { type: "string" }, content: { type: "string" }, position: { type: "string", enum: ["before", "after"] } }, required: ["path", "marker", "content"] } } },
-      { type: "function", function: { name: "vault_list", description: "List files under a vault folder.", parameters: { type: "object", properties: { folder: { type: "string" }, limit: { type: "number" } } } } }
+      f("vault_current_context", "Read current Obsidian note and selection.", {}),
+      f("vault_search", "Search markdown content and paths.", { query: { type: "string" }, limit: { type: "number" } }, ["query"]),
+      f("vault_glob", "List paths matching a simple glob pattern.", { pattern: { type: "string" }, limit: { type: "number" } }, ["pattern"]),
+      f("vault_read", "Read a vault file.", { path: { type: "string" } }, ["path"]),
+      f("vault_list", "List files below a folder.", { folder: { type: "string" }, limit: { type: "number" } }),
+      f("vault_write", "Create or overwrite a file. Requires confirmation.", { path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
+      f("vault_append", "Append file content. Requires confirmation.", { path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
+      f("vault_insert", "Insert around a marker. Requires confirmation.", { path: { type: "string" }, marker: { type: "string" }, content: { type: "string" }, position: { type: "string", enum: ["before", "after"] } }, ["path", "marker", "content"]),
+      f("vault_move", "Move or rename a path. Requires confirmation.", { from: { type: "string" }, to: { type: "string" } }, ["from", "to"]),
+      f("vault_delete", "Delete a file. Requires confirmation.", { path: { type: "string" } }, ["path"]),
+      f("vault_frontmatter_read", "Read YAML frontmatter fields.", { path: { type: "string" } }, ["path"]),
+      f("vault_frontmatter_set", "Set a frontmatter field. Requires confirmation.", { path: { type: "string" }, key: { type: "string" }, value: {} }, ["path", "key"]),
+      f("vault_links", "Read outgoing and incoming links for a note.", { path: { type: "string" } }, ["path"]),
+      f("vault_create_link", "Append a wikilink to a note. Requires confirmation.", { path: { type: "string" }, target: { type: "string" }, alias: { type: "string" } }, ["path", "target"]),
+      f("editor_insert", "Insert content at current editor cursor. Requires confirmation.", { content: { type: "string" } }, ["content"]),
+      f("editor_replace_selection", "Replace current editor selection. Requires confirmation.", { content: { type: "string" } }, ["content"])
     ];
   }
   async executeTool(name, args) {
@@ -984,6 +1118,59 @@ ${ctx.text.slice(0, 24e3)}` : "No active markdown note.";
           await this.toolInsert(path, marker, content, String(args.position ?? "after"));
           result = `Inserted into ${path}`;
         }
+      } else if (name === "vault_glob") result = this.toolGlob(String(args.pattern ?? "*"), Number(args.limit ?? 100));
+      else if (name === "vault_move") {
+        const from = String(args.from ?? "");
+        const to = String(args.to ?? "");
+        if (!await this.confirmOperation("Move", `${from} \u2192 ${to}`, "Move/rename this path?")) result = "User cancelled move.";
+        else {
+          await this.toolMove(from, to);
+          result = `Moved ${from} to ${to}`;
+        }
+      } else if (name === "vault_delete") {
+        const path = String(args.path ?? "");
+        if (!await this.confirmOperation("Delete", path, "This file will be permanently deleted.")) result = "User cancelled delete.";
+        else {
+          await this.toolDelete(path);
+          result = `Deleted ${path}`;
+        }
+      } else if (name === "vault_frontmatter_read") result = JSON.stringify(await this.toolFrontmatterRead(String(args.path ?? "")), null, 2);
+      else if (name === "vault_frontmatter_set") {
+        const path = String(args.path ?? "");
+        if (!await this.confirmOperation("Frontmatter", path, `Set ${String(args.key)} = ${JSON.stringify(args.value)}`)) result = "User cancelled frontmatter edit.";
+        else {
+          await this.toolFrontmatterSet(path, String(args.key ?? ""), args.value);
+          result = `Updated frontmatter in ${path}`;
+        }
+      } else if (name === "vault_links") result = await this.toolLinks(String(args.path ?? ""));
+      else if (name === "vault_create_link") {
+        const path = String(args.path ?? "");
+        const target = String(args.target ?? "");
+        const alias = String(args.alias ?? "");
+        const link = `[[${target}${alias ? "|" + alias : ""}]]`;
+        if (!await this.confirmMutation("Append", path, link)) result = "User cancelled link creation.";
+        else {
+          await this.toolAppend(path, link);
+          result = `Added ${link} to ${path}`;
+        }
+      } else if (name === "editor_insert") {
+        const content = String(args.content ?? "");
+        if (!await this.confirmOperation("Editor insert", "Current cursor", content)) result = "User cancelled editor insert.";
+        else {
+          const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+          if (!view) throw new Error("No active editor");
+          view.editor.replaceSelection(content);
+          result = "Inserted at cursor.";
+        }
+      } else if (name === "editor_replace_selection") {
+        const content = String(args.content ?? "");
+        if (!await this.confirmOperation("Replace selection", "Current selection", content)) result = "User cancelled selection replacement.";
+        else {
+          const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+          if (!view) throw new Error("No active editor");
+          view.editor.replaceSelection(content);
+          result = "Replaced selection.";
+        }
       } else result = `Unknown tool: ${name}`;
       block.result.textContent = result.slice(0, 12e3);
       block.details.classList.add("nc-tool-success");
@@ -994,6 +1181,73 @@ ${ctx.text.slice(0, 24e3)}` : "No active markdown note.";
       block.details.classList.add("nc-tool-error");
       return result;
     }
+  }
+  toolGlob(pattern, limit = 100) {
+    const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "\xA7\xA7").replace(/\*/g, "[^/]*").replace(/\?/g, ".").replace(/§§/g, ".*");
+    const rx = new RegExp(`^${escaped}$`, "i");
+    const paths = this.app.vault.getFiles().map((f) => f.path).filter((p) => rx.test(p));
+    return paths.slice(0, limit).map((p) => `- ${p}`).join("\n") || "No matches.";
+  }
+  async toolMove(from, to) {
+    const a = this.normalizePath(from), b = this.normalizePath(to);
+    if (!a || !b) throw new Error("Missing path");
+    await this.ensureParentFolder(b);
+    await this.app.vault.adapter.rename(a, b);
+  }
+  async toolDelete(path) {
+    const p = this.normalizePath(path);
+    if (!p || p.startsWith("raw/")) throw new Error("Deleting raw evidence is prohibited.");
+    await this.app.vault.adapter.remove(p);
+  }
+  async toolFrontmatterRead(path) {
+    const text = await this.toolRead(path);
+    const match = text.match(/^---\n([\s\S]*?)\n---/);
+    if (!match) return {};
+    const out = {};
+    for (const line of match[1].split("\n")) {
+      const i = line.indexOf(":");
+      if (i < 1) continue;
+      out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    }
+    return out;
+  }
+  async toolFrontmatterSet(path, key, value) {
+    if (!key) throw new Error("Missing frontmatter key");
+    const text = await this.toolRead(path);
+    const encoded = typeof value === "string" ? value : JSON.stringify(value);
+    const match = text.match(/^---\n([\s\S]*?)\n---/);
+    let next;
+    if (!match) next = `---
+${key}: ${encoded}
+---
+${text}`;
+    else {
+      const lines = match[1].split("\n");
+      const i = lines.findIndex((x) => x.split(":")[0].trim() === key);
+      if (i >= 0) lines[i] = `${key}: ${encoded}`;
+      else lines.push(`${key}: ${encoded}`);
+      next = `---
+${lines.join("\n")}
+---${text.slice(match[0].length)}`;
+    }
+    await this.toolWrite(path, next);
+  }
+  async toolLinks(path) {
+    const p = this.normalizePath(path);
+    const file = this.app.vault.getAbstractFileByPath(p);
+    if (!file) throw new Error(`File not found: ${p}`);
+    const cache = this.app.metadataCache.getFileCache(file);
+    const outgoing = (cache?.links ?? []).map((l) => `- [[${l.link}]]`).join("\n") || "None";
+    const incoming = [];
+    for (const source of this.app.vault.getMarkdownFiles()) {
+      const links = this.app.metadataCache.getFileCache(source)?.links ?? [];
+      if (links.some((l) => this.app.metadataCache.getFirstLinkpathDest(l.link, source.path)?.path === p)) incoming.push(`- [[${source.path}]]`);
+    }
+    return `Outgoing:
+${outgoing}
+
+Incoming:
+${incoming.join("\n") || "None"}`;
   }
   normalizePath(path) {
     return path.replace(/^\/+/, "").trim();
@@ -1138,7 +1392,13 @@ ${ctx.text.slice(0, 24e3)}` : "No active markdown note.";
   }
   async ensureMemoryScaffold() {
     const dirs = ["raw", "sources", "memory", "memory/inbox", "memory/feedback", "people", "projects", "wiki", "decisions", "daily", "palace", ".nullclaw", ".nullclaw/sessions", ".nullclaw/skills"];
-    for (const d of dirs) if (!await this.app.vault.adapter.exists(d)) await this.app.vault.adapter.mkdir(d);
+    for (const d of dirs) {
+      try {
+        if (!await this.app.vault.adapter.exists(d)) await this.app.vault.adapter.mkdir(d);
+      } catch (e) {
+        if (!await this.app.vault.adapter.exists(d)) throw e;
+      }
+    }
     const defaults = {
       "profile.md": "# Profile\n\n\u7528\u6237\u753B\u50CF\uFF0C\u5F85\u6C89\u6DC0\u3002\n",
       "vault.md": "# Vault\n\n\u8FD9\u4E2A\u77E5\u8BC6\u5E93\u7684\u7528\u9014\u3001\u7ED3\u6784\u548C\u957F\u671F\u76EE\u6807\u3002\n",
@@ -1225,95 +1485,203 @@ ${text}`);
     }
   }
   async skillDigestCurrent() {
-    await this.ensureMemoryScaffold();
-    const ctx = this.getActiveMarkdownContext();
-    if (!ctx) return this.println("No active markdown note.", "nc-error");
-    const target = ctx.selection || ctx.text;
-    const prompt = `\u6D88\u5316\u5F53\u524D Obsidian \u7B14\u8BB0\uFF0C\u8F93\u51FA\u56DB\u90E8\u5206\uFF1A
+    await this.runSkillFlow("obsidian-digest-note", async (flow) => {
+      const ctx = this.getActiveMarkdownContext();
+      if (!ctx) throw new Error("No active markdown note.");
+      flow.step("Read current note", ctx.path, "done");
+      const target = ctx.selection || ctx.text;
+      flow.step("Analyze", "Extracting facts, links, memory candidates and tasks\u2026", "running");
+      const prompt = `\u6D88\u5316\u5F53\u524D Obsidian \u7B14\u8BB0\uFF0C\u8F93\u51FA\u56DB\u90E8\u5206\uFF1A
 1. \u8981\u70B9
 2. \u5173\u8054\u4EBA\u7269/\u9879\u76EE/\u6982\u5FF5
 3. \u53EF\u6C89\u6DC0\u957F\u671F\u8BB0\u5FC6\u5019\u9009\uFF08\u6807\u6CE8 people/projects/wiki/decisions/daily\uFF09
 4. \u5F85\u529E
+\u6240\u6709\u7ED3\u8BBA\u4FDD\u7559\u6765\u6E90 ${ctx.path}\u3002\u4E0D\u8981\u76F4\u63A5\u5199\u957F\u671F\u8BB0\u5FC6\u3002
 
-\u6765\u6E90\uFF1A${ctx.path}
-
-\u5185\u5BB9\uFF1A
 ${target.slice(0, 24e3)}`;
-    const result = this.settings.apiKey ? await this.callLLM(prompt) : `# Digest: ${ctx.path}
+      const result = this.settings.apiKey ? await this.callLLM(prompt) : `# Digest: ${ctx.path}
 
 ${target.slice(0, 4e3)}`;
-    if (!result) return;
-    const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-    const out = `memory/inbox/${today}.md`;
-    await this.toolAppend(out, `
+      if (!result) throw new Error("Digest produced no result.");
+      const out = `memory/inbox/${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.md`;
+      flow.step("Write inbox", out, "awaiting");
+      const entry = `
 ## ${(/* @__PURE__ */ new Date()).toLocaleString()} \u2014 ${ctx.path}
 
 ${result}
-`);
-    this.println(`Digest written to ${out}
-
-${result}`, "nc-output");
+`;
+      if (!await this.confirmMutation("Append inbox", out, entry)) throw new Error("User cancelled inbox write.");
+      await this.toolAppend(out, entry);
+      flow.step("Write inbox", out, "done");
+      return `Digest written to ${out}`;
+    });
   }
   async skillReviewInbox() {
-    await this.ensureMemoryScaffold();
-    const inbox = await this.collectFolderText("memory/inbox");
-    if (!inbox) return this.println("memory/inbox is empty.", "nc-info");
-    const prompt = `\u5BA1\u6838 memory/inbox \u5F85\u6C89\u6DC0\u5185\u5BB9\uFF0C\u53BB\u91CD\u5F52\u7EB3\u4E3A\u53EF\u4EBA\u5DE5\u786E\u8BA4\u6E05\u5355\u3002\u6BCF\u6761\u6807\u6CE8\u5EFA\u8BAE\u5F52\u5C5E people/projects/wiki/decisions/daily\u3001\u7F6E\u4FE1\u5EA6\u3001\u6765\u6E90\u3002
+    await this.runSkillFlow("obsidian-review-inbox", async (flow) => {
+      const inbox = await this.collectFolderText("memory/inbox");
+      if (!inbox) throw new Error("memory/inbox is empty.");
+      flow.step("Scan inbox", `${inbox.length} chars`, "done");
+      const prompt = `\u5BA1\u6838 memory/inbox\uFF0C\u53BB\u91CD\u5F52\u7EB3\u4E3A\u4EBA\u5DE5\u786E\u8BA4\u6E05\u5355\u3002\u6BCF\u6761\u5FC5\u987B\u6807\u6CE8\u5F52\u5C5E people/projects/wiki/decisions/daily\u3001\u7F6E\u4FE1\u5EA6\u3001\u6765\u6E90\uFF1B\u4E0D\u8981\u6267\u884C\u957F\u671F\u5199\u5165\u3002
 
 ${inbox.slice(0, 3e4)}`;
-    const result = this.settings.apiKey ? await this.callLLM(prompt) : inbox;
-    if (!result) return;
-    const out = `memory/inbox/review-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.md`;
-    await this.toolWrite(out, result);
-    this.println(`Review written to ${out}
-
-${result}`, "nc-output");
+      flow.step("Build review", "Deduplicating and classifying\u2026", "running");
+      const result = this.settings.apiKey ? await this.callLLM(prompt) : inbox;
+      if (!result) throw new Error("Review produced no result.");
+      const out = `memory/inbox/review-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.md`;
+      if (!await this.confirmMutation("Write review", out, result)) throw new Error("User cancelled review write.");
+      await this.toolWrite(out, result);
+      flow.step("Write review", out, "done");
+      return `Review written to ${out}`;
+    });
   }
-  async skillApplyMemory(yes) {
-    await this.ensureMemoryScaffold();
-    const inbox = await this.collectFolderText("memory/inbox");
-    if (!inbox) return this.println("memory/inbox is empty.", "nc-info");
-    const prompt = `\u57FA\u4E8E\u4E0B\u9762 inbox\uFF0C\u751F\u6210\u957F\u671F\u8BB0\u5FC6\u5408\u5E76\u65B9\u6848\u3002\u4E0D\u8981\u76F4\u63A5\u5199\u5165\uFF0C\u8F93\u51FA\u8981\u5199\u5165\u54EA\u4E9B\u6587\u4EF6\u548C\u5177\u4F53\u5185\u5BB9\u3002\u76EE\u6807\u76EE\u5F55\uFF1Apeople/projects/wiki/decisions/daily/profile.md/style.md\u3002
+  async skillApplyMemory(_yes) {
+    await this.runSkillFlow("obsidian-apply-memory", async (flow) => {
+      const inbox = await this.collectFolderText("memory/inbox");
+      if (!inbox) throw new Error("memory/inbox is empty.");
+      flow.step("Read approved candidates", `${inbox.length} chars`, "done");
+      const prompt = `\u57FA\u4E8E inbox \u751F\u6210\u957F\u671F\u8BB0\u5FC6\u5408\u5E76\u8BA1\u5212\u3002\u6309\u6587\u4EF6\u5206\u7EC4\uFF0C\u76EE\u6807\u53EA\u5141\u8BB8 people/projects/wiki/decisions/daily/profile.md/style.md\u3002\u6BCF\u9879\u5305\u542B\u76EE\u6807\u8DEF\u5F84\u3001\u8FFD\u52A0/\u8986\u76D6\u65B9\u5F0F\u3001\u5177\u4F53\u5185\u5BB9\u548C\u6765\u6E90\u3002\u4E0D\u8981\u58F0\u79F0\u5DF2\u7ECF\u6267\u884C\u3002
 
 ${inbox.slice(0, 3e4)}`;
-    const plan = this.settings.apiKey ? await this.callLLM(prompt) : inbox;
-    if (!plan) return;
-    const out = `memory/apply-plan-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.md`;
-    await this.toolWrite(out, plan);
-    this.println(`Apply plan written to ${out}. Review manually before applying.
+      const plan = this.settings.apiKey ? await this.callLLM(prompt) : inbox;
+      if (!plan) throw new Error("Apply plan produced no result.");
+      const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+      const out = `memory/apply-plan-${date}.md`;
+      if (!await this.confirmMutation("Write apply plan", out, plan)) throw new Error("User cancelled plan write.");
+      await this.toolWrite(out, plan);
+      flow.step("Write plan", out, "done");
+      const approved = await this.confirmOperation("Approve memory plan", out, "Approve this plan for manual/structured application. Free-form plans are not auto-applied to long-term memory.");
+      if (approved) {
+        await this.toolWrite(`memory/apply-approved-${date}.md`, `# Approved Memory Plan
 
-${plan}`, "nc-output");
+Source: [[${out}]]
+Approved: ${(/* @__PURE__ */ new Date()).toISOString()}
+
+${plan}`);
+        flow.step("Approval", "Approved plan recorded; long-term writes remain explicit.", "done");
+      } else flow.step("Approval", "Not approved", "cancelled");
+      return approved ? "Memory plan approved and recorded." : "Memory plan saved but not approved.";
+    });
+  }
+  async skillUpdateProfile() {
+    await this.runSkillFlow("obsidian-update-profile", async (flow) => {
+      const feedback = await this.collectFolderText("memory/feedback");
+      if (!feedback) throw new Error("No feedback records.");
+      const currentProfile = await this.toolRead("profile.md");
+      const currentStyle = await this.toolRead("style.md");
+      flow.step("Read feedback", `${feedback.length} chars`, "done");
+      const prompt = `\u6839\u636E\u53CD\u9988\u5206\u522B\u8F93\u51FA profile.md \u548C style.md \u7684\u5B8C\u6574\u5EFA\u8BAE\u65B0\u5185\u5BB9\u3002\u683C\u5F0F\u5FC5\u987B\u4E3A\uFF1A
+===PROFILE===
+...
+===STYLE===
+...
+\u4E0D\u5F97\u4FEE\u6539\u4E8B\u5B9E\uFF0C\u4EC5\u603B\u7ED3\u7A33\u5B9A\u504F\u597D\u3002
+
+Current profile:
+${currentProfile}
+
+Current style:
+${currentStyle}
+
+Feedback:
+${feedback.slice(0, 24e3)}`;
+      const proposal = this.settings.apiKey ? await this.callLLM(prompt) : null;
+      if (!proposal) throw new Error("Profile update requires configured LLM.");
+      const p = proposal.match(/===PROFILE===([\s\S]*?)===STYLE===/)?.[1]?.trim();
+      const st = proposal.match(/===STYLE===([\s\S]*)/)?.[1]?.trim();
+      if (!p || !st) throw new Error("Model did not return structured PROFILE/STYLE sections.");
+      if (await this.confirmMutation("Update profile", "profile.md", p)) {
+        await this.toolWrite("profile.md", p);
+        flow.step("profile.md", "Updated", "done");
+      } else flow.step("profile.md", "Cancelled", "cancelled");
+      if (await this.confirmMutation("Update style", "style.md", st)) {
+        await this.toolWrite("style.md", st);
+        flow.step("style.md", "Updated", "done");
+      } else flow.step("style.md", "Cancelled", "cancelled");
+      return "Profile workflow completed.";
+    });
   }
   async skillVaultDoctor() {
-    await this.ensureMemoryScaffold();
-    const files = this.app.vault.getFiles();
-    const markdown = this.app.vault.getMarkdownFiles();
-    const rawFiles = files.filter((f) => f.path.startsWith("raw/"));
-    const emptyMd = [];
-    for (const f of markdown.slice(0, 500)) {
-      try {
-        if ((await this.app.vault.cachedRead(f)).trim().length < 20) emptyMd.push(f.path);
-      } catch {
+    await this.runSkillFlow("obsidian-vault-doctor", async (flow) => {
+      const files = this.app.vault.getFiles();
+      const markdown = this.app.vault.getMarkdownFiles();
+      const raw = files.filter((f) => f.path.startsWith("raw/"));
+      const empty = [];
+      const broken = [];
+      for (const f of markdown.slice(0, 800)) {
+        try {
+          const text = await this.app.vault.cachedRead(f);
+          if (text.trim().length < 20) empty.push(f.path);
+          for (const l of this.app.metadataCache.getFileCache(f)?.links ?? []) if (!this.app.metadataCache.getFirstLinkpathDest(l.link, f.path)) broken.push(`${f.path} \u2192 ${l.link}`);
+        } catch {
+        }
       }
-    }
-    const report = `# Vault Doctor
+      flow.step("Scan vault", `${files.length} files`, "done");
+      const report = `# Vault Doctor
 
-- total files: ${files.length}
-- markdown files: ${markdown.length}
-- raw files: ${rawFiles.length}
-- empty/near-empty notes: ${emptyMd.length}
+- files: ${files.length}
+- markdown: ${markdown.length}
+- raw: ${raw.length}
+- empty: ${empty.length}
+- broken links: ${broken.length}
 
-## Empty notes
-${emptyMd.slice(0, 50).map((p) => `- ${p}`).join("\n") || "None"}
+## Empty
+${empty.slice(0, 80).map((x) => "- " + x).join("\n") || "None"}
 
-## Raw files
-${rawFiles.slice(0, 80).map((f) => `- ${f.path}`).join("\n") || "None"}
+## Broken links
+${broken.slice(0, 120).map((x) => "- " + x).join("\n") || "None"}
+
+## Raw
+${raw.slice(0, 80).map((x) => "- " + x.path).join("\n") || "None"}
 `;
-    const out = `memory/vault-doctor-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.md`;
-    await this.toolWrite(out, report);
-    this.println(`Vault doctor report written to ${out}
+      const out = `memory/vault-doctor-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.md`;
+      if (!await this.confirmMutation("Write doctor report", out, report)) throw new Error("User cancelled report.");
+      await this.toolWrite(out, report);
+      flow.step("Write report", out, "done");
+      return `Vault doctor report: ${out}`;
+    });
+  }
+  async skillCreateSkill(description) {
+    await this.runSkillFlow("obsidian-create-skill", async (flow) => {
+      if (!description) throw new Error("Usage: /create-skill <description>");
+      const slug = description.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || `skill-${Date.now()}`;
+      const prompt = `Create a concise SKILL.md for a local Obsidian agent. Include YAML frontmatter name and description, triggers, required context, allowed tools, steps, output paths, confirmation policy, and forbidden actions. User request: ${description}`;
+      const content = this.settings.apiKey ? await this.callLLM(prompt) : `---
+name: ${slug}
+description: ${description}
+---
 
-${report}`, "nc-output");
+# Steps
+1. Clarify input.
+2. Read relevant notes.
+3. Produce output with confirmation.
+`;
+      if (!content) throw new Error("Skill generation failed.");
+      const out = `.nullclaw/skills/${slug}/SKILL.md`;
+      flow.step("Generate skill", out, "awaiting");
+      if (!await this.confirmMutation("Create skill", out, content)) throw new Error("User cancelled skill creation.");
+      await this.toolWrite(out, content);
+      flow.step("Create skill", out, "done");
+      return `Created ${out}`;
+    });
+  }
+  async runSkillFlow(name, runner) {
+    const card = this.outputEl.createDiv({ cls: "nc-skill-flow" });
+    card.createDiv({ cls: "nc-skill-flow-title", text: `Skill \xB7 ${name}` });
+    const steps = card.createDiv({ cls: "nc-skill-steps" });
+    const flow = { step: (label, detail, state) => {
+      const row = steps.createDiv({ cls: `nc-skill-step is-${state}` });
+      row.createSpan({ cls: "nc-skill-step-label", text: label });
+      row.createSpan({ cls: "nc-skill-step-detail", text: detail });
+      this.stickToBottom();
+    } };
+    try {
+      const result = await runner(flow);
+      card.addClass("is-complete");
+      this.println(result, "nc-output");
+    } catch (e) {
+      card.addClass("is-error");
+      this.println(`Skill failed: ${e.message}`, "nc-error");
+    }
   }
   async writeFeedback(kind, text) {
     await this.ensureMemoryScaffold();
@@ -1362,6 +1730,134 @@ ${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
     this.inputEl.addEventListener("paste", async (e) => {
       if (e.clipboardData?.files?.length) await saveFiles(e.clipboardData.files);
     });
+  }
+  builtinSkills() {
+    return [
+      { id: "compact", label: "Compact context", description: "\u538B\u7F29\u5F53\u524D\u4F1A\u8BDD\u4E0A\u4E0B\u6587", command: "/compact" },
+      { id: "digest", label: "Digest current note", description: "\u6D88\u5316\u5F53\u524D\u7B14\u8BB0\u6216\u9009\u533A\u5230 inbox", command: "/digest-current" },
+      { id: "review", label: "Review inbox", description: "\u5BA1\u6838\u5F85\u6C89\u6DC0\u5185\u5BB9", command: "/review-inbox" },
+      { id: "apply", label: "Apply memory", description: "\u786E\u8BA4\u540E\u5408\u5E76\u957F\u671F\u8BB0\u5FC6", command: "/apply-memory" },
+      { id: "profile", label: "Update profile", description: "\u6839\u636E\u53CD\u9988\u66F4\u65B0\u753B\u50CF\u4E0E\u98CE\u683C", command: "/update-profile" },
+      { id: "doctor", label: "Vault doctor", description: "\u6267\u884C Vault \u5168\u5E93\u4F53\u68C0", command: "/vault-doctor" },
+      { id: "create", label: "Create skill", description: "\u521B\u5EFA\u65B0\u7684\u672C\u5730\u6280\u80FD", command: "/create-skill" }
+    ];
+  }
+  updateSkillMenu() {
+    const value = this.inputEl.value;
+    if (!value.startsWith("/") || value.includes(" ")) {
+      this.closeSkillMenu();
+      return;
+    }
+    const q = value.slice(1).toLowerCase();
+    this.skillItems = this.builtinSkills().filter((x) => x.id.includes(q) || x.label.toLowerCase().includes(q));
+    if (!this.skillItems.length) {
+      this.closeSkillMenu();
+      return;
+    }
+    this.skillIndex = Math.min(this.skillIndex, this.skillItems.length - 1);
+    this.renderSkillMenu();
+  }
+  renderSkillMenu() {
+    this.skillEl.empty();
+    this.skillEl.hidden = false;
+    this.skillItems.forEach((skill, i) => {
+      const item = this.skillEl.createDiv({ cls: `nc-skill-item${i === this.skillIndex ? " is-selected" : ""}` });
+      item.createDiv({ cls: "nc-skill-label", text: `/${skill.id} \xB7 ${skill.label}` });
+      item.createDiv({ cls: "nc-skill-desc", text: skill.description });
+      item.addEventListener("mousedown", (e) => e.preventDefault());
+      item.addEventListener("click", () => this.chooseSkill(i));
+    });
+  }
+  moveSkill(delta) {
+    if (!this.skillItems.length) return;
+    this.skillIndex = (this.skillIndex + delta + this.skillItems.length) % this.skillItems.length;
+    this.renderSkillMenu();
+  }
+  chooseSkill(index) {
+    const skill = this.skillItems[index];
+    if (!skill) return;
+    this.selectedSkill = skill;
+    this.inputEl.value = "";
+    this.closeSkillMenu();
+    this.renderRefs();
+  }
+  closeSkillMenu() {
+    this.skillEl.hidden = true;
+    this.skillEl.empty();
+    this.skillItems = [];
+    this.skillIndex = 0;
+  }
+  async loadSessionIndex() {
+    await this.ensureMemoryScaffold();
+    const listing = await this.app.vault.adapter.list(".nullclaw/sessions");
+    const items = [];
+    for (const path of listing.files.filter((x) => x.endsWith(".json"))) {
+      try {
+        const d = JSON.parse(await this.app.vault.adapter.read(path));
+        items.push({ id: d.id || path.split("/").pop().replace(".json", ""), title: d.title || "Untitled", updatedAt: d.updatedAt || 0, messageCount: d.messages?.length || 0 });
+      } catch {
+      }
+    }
+    return items.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+  async toggleSessionPanel(forceOpen) {
+    const open = forceOpen ?? this.sessionEl.hidden;
+    if (!open) {
+      this.sessionEl.hidden = true;
+      this.sessionEl.empty();
+      return;
+    }
+    this.sessionEl.empty();
+    this.sessionEl.hidden = false;
+    const head = this.sessionEl.createDiv({ cls: "nc-session-head" });
+    head.createSpan({ text: "Sessions" });
+    const create = head.createEl("button", { text: "+ New" });
+    create.addEventListener("click", () => void this.newSession());
+    const close = head.createEl("button", { text: "\xD7" });
+    close.addEventListener("click", () => {
+      this.sessionEl.hidden = true;
+    });
+    for (const item of await this.loadSessionIndex()) {
+      const row = this.sessionEl.createDiv({ cls: `nc-session-row${item.id === this.sessionId ? " is-active" : ""}` });
+      const main = row.createDiv({ cls: "nc-session-main" });
+      main.createDiv({ cls: "nc-session-title", text: item.title });
+      main.createDiv({ cls: "nc-session-meta", text: `${item.messageCount} messages \xB7 ${new Date(item.updatedAt).toLocaleString()}` });
+      main.addEventListener("click", () => void this.switchSession(item.id));
+      const del = row.createEl("button", { text: "Delete" });
+      del.addEventListener("click", () => void this.deleteSession(item.id));
+    }
+  }
+  async newSession(title) {
+    await this.saveSession();
+    this.sessionId = `session-${Date.now()}`;
+    this.messages = [];
+    this.sessionSummary = "";
+    this.attachedRefs = [];
+    this.attachedSelection = "";
+    this.outputEl.empty();
+    this.renderRefs();
+    if (title) this.messages.push({ role: "system", content: `Session title: ${title}` });
+    await this.saveSession();
+    this.println(`New session: ${title || this.sessionId}`, "nc-info");
+    this.sessionEl.hidden = true;
+  }
+  async switchSession(id) {
+    await this.saveSession();
+    this.sessionId = id;
+    this.messages = [];
+    this.sessionSummary = "";
+    this.attachedRefs = [];
+    this.attachedSelection = "";
+    this.outputEl.empty();
+    this.sessionEl.hidden = true;
+    await this.restoreSession();
+  }
+  async deleteSession(id) {
+    if (!await this.confirmOperation("Delete session", id, "Delete this saved conversation?")) return;
+    const path = `.nullclaw/sessions/${id}.json`;
+    if (await this.app.vault.adapter.exists(path)) await this.app.vault.adapter.remove(path);
+    if (id === this.sessionId) await this.newSession();
+    else await this.toggleSessionPanel(true);
   }
   sessionPath() {
     return `.nullclaw/sessions/${this.sessionId}.json`;
@@ -1416,7 +1912,21 @@ ${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
     if (role === "assistant") {
       const actions = card.createDiv({ cls: "nc-message-actions" });
       const copy = actions.createEl("button", { text: "Copy" });
-      copy.addEventListener("click", () => navigator.clipboard?.writeText(text));
+      copy.addEventListener("click", async () => {
+        try {
+          if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+          else {
+            const area = document.createElement("textarea");
+            area.value = text;
+            document.body.appendChild(area);
+            area.select();
+            document.execCommand("copy");
+            area.remove();
+          }
+        } catch {
+          this.println("Copy failed.", "nc-error");
+        }
+      });
       const good = actions.createEl("button", { text: "\u{1F44D}" });
       good.addEventListener("click", () => void this.writeFeedback("good", text.slice(0, 1e3)));
       const bad = actions.createEl("button", { text: "\u{1F44E}" });
@@ -1439,6 +1949,25 @@ ${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
     const result = details.createEl("pre", { cls: "nc-tool-result", text: "Running\u2026" });
     if (this.isNearBottom()) this.stickToBottom();
     return { details, result };
+  }
+  async confirmOperation(action, target, detail) {
+    return await new Promise((resolve) => {
+      const card = this.outputEl.createDiv({ cls: "nc-confirm-card" });
+      card.createDiv({ cls: "nc-confirm-title", text: `${action} \xB7 ${target}` });
+      card.createDiv({ cls: "nc-confirm-detail", text: detail });
+      const controls = card.createDiv({ cls: "nc-confirm-actions" });
+      const yes = controls.createEl("button", { cls: "mod-cta", text: "Confirm" });
+      const no = controls.createEl("button", { text: "Cancel" });
+      const finish = (value) => {
+        yes.disabled = true;
+        no.disabled = true;
+        card.addClass(value ? "nc-confirmed" : "nc-cancelled");
+        resolve(value);
+      };
+      yes.addEventListener("click", () => finish(true));
+      no.addEventListener("click", () => finish(false));
+      this.stickToBottom();
+    });
   }
   async confirmMutation(action, path, content, marker = "") {
     const p = this.normalizePath(path);
@@ -1472,16 +2001,33 @@ ${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
     });
   }
   simpleDiff(before, after) {
-    if (!before) return after.split("\n").slice(0, 80).map((x) => `+ ${x}`).join("\n");
-    const a = before.split("\n");
-    const b = after.split("\n");
-    let prefix = 0;
-    while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
-    let suffix = 0;
-    while (suffix < a.length - prefix && suffix < b.length - prefix && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix++;
-    const removed = a.slice(prefix, a.length - suffix).slice(0, 60).map((x) => `- ${x}`);
-    const added = b.slice(prefix, b.length - suffix).slice(0, 60).map((x) => `+ ${x}`);
-    return [`@@ line ${prefix + 1} @@`, ...removed, ...added].join("\n");
+    const a = before.split("\n"), b = after.split("\n");
+    if (a.length * b.length > 25e4) {
+      let prefix = 0;
+      while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
+      let suffix = 0;
+      while (suffix < a.length - prefix && suffix < b.length - prefix && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix++;
+      return [`@@ line ${prefix + 1} (large-file diff) @@`, ...a.slice(prefix, a.length - suffix).slice(0, 100).map((x) => `- ${x}`), ...b.slice(prefix, b.length - suffix).slice(0, 100).map((x) => `+ ${x}`)].join("\n");
+    }
+    const dp = Array.from({ length: a.length + 1 }, () => new Uint16Array(b.length + 1));
+    for (let i2 = a.length - 1; i2 >= 0; i2--) for (let j2 = b.length - 1; j2 >= 0; j2--) dp[i2][j2] = a[i2] === b[j2] ? dp[i2 + 1][j2 + 1] + 1 : Math.max(dp[i2 + 1][j2], dp[i2][j2 + 1]);
+    const lines = [];
+    let i = 0, j = 0, shown = 0;
+    while ((i < a.length || j < b.length) && shown < 240) {
+      if (i < a.length && j < b.length && a[i] === b[j]) {
+        if (lines.length && lines[lines.length - 1] !== "\u2026") lines.push(`  ${a[i]}`);
+        i++;
+        j++;
+      } else if (j < b.length && (i >= a.length || dp[i][j + 1] >= dp[i + 1][j])) {
+        lines.push(`+ ${b[j++]}`);
+        shown++;
+      } else {
+        lines.push(`- ${a[i++]}`);
+        shown++;
+      }
+      if (lines.length > 300) break;
+    }
+    return lines.join("\n") || "(no changes)";
   }
   updateMentionMenu() {
     const value = this.inputEl.value;
@@ -1512,7 +2058,7 @@ ${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
   }
   renderMentionMenu() {
     this.mentionEl.empty();
-    this.mentionEl.show();
+    this.mentionEl.hidden = false;
     this.mentionItems.forEach((path, i) => {
       const item = this.mentionEl.createDiv({ cls: `nc-mention-item${i === this.mentionIndex ? " is-selected" : ""}`, text: path });
       item.addEventListener("mousedown", (e) => e.preventDefault());
@@ -1536,18 +2082,27 @@ ${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
     void this.saveSession();
   }
   closeMentionMenu() {
-    this.mentionEl.hide();
+    this.mentionEl.hidden = true;
     this.mentionEl.empty();
     this.mentionItems = [];
     this.mentionStart = -1;
   }
   renderRefs() {
     this.refsEl.empty();
-    if (!this.attachedRefs.length) {
-      this.refsEl.hide();
+    if (!this.attachedRefs.length && !this.selectedSkill) {
+      this.refsEl.hidden = true;
       return;
     }
-    this.refsEl.show();
+    this.refsEl.hidden = false;
+    if (this.selectedSkill) {
+      const pill = this.refsEl.createSpan({ cls: "nc-skill-pill" });
+      pill.createSpan({ text: `/${this.selectedSkill.id} \xB7 ${this.selectedSkill.label}` });
+      const remove = pill.createEl("button", { text: "\xD7" });
+      remove.addEventListener("click", () => {
+        this.selectedSkill = null;
+        this.renderRefs();
+      });
+    }
     for (const path of this.attachedRefs) {
       const chip = this.refsEl.createSpan({ cls: "nc-ref-chip" });
       chip.createSpan({ text: `@ ${path}` });

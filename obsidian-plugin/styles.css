@@ -213,3 +213,36 @@ body.is-mobile .nullclaw-input-wrap {
   position: relative !important;
   z-index: 99999 !important;
 }
+
+/* Sessions */
+.nc-session-button { margin-left: auto; padding: 1px 7px; font-size: 10px; }
+.nc-session-panel { position: sticky; top: 0; z-index: 1000; margin: -6px -4px 8px; padding: 7px; border-radius: 9px; background: var(--background-secondary); box-shadow: 0 4px 18px rgba(0,0,0,.22); }
+.nc-session-head { display:flex; align-items:center; gap:6px; font-weight:700; }
+.nc-session-head > span { flex:1; }
+.nc-session-row { display:flex; align-items:center; gap:6px; padding:6px; margin-top:4px; border-radius:7px; }
+.nc-session-row:hover,.nc-session-row.is-active { background:var(--background-modifier-hover); }
+.nc-session-main { flex:1; min-width:0; }
+.nc-session-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.nc-session-meta { font-size:10px; color:var(--text-muted); }
+.nc-session-row button { font-size:10px; padding:2px 5px; }
+
+/* Slash skill picker and pill */
+.nullclaw-skill-menu { position:absolute; left:10px; right:10px; bottom:calc(100% + 3px); max-height:260px; overflow:auto; z-index:100011; padding:4px; border-radius:9px; background:var(--background-secondary); box-shadow:0 5px 24px rgba(0,0,0,.26); }
+.nc-skill-item { padding:7px 9px; border-radius:6px; }
+.nc-skill-item.is-selected { background:var(--background-modifier-hover); }
+.nc-skill-label { color:var(--text-accent); font-size:12px; font-weight:700; }
+.nc-skill-desc { color:var(--text-muted); font-size:10px; }
+.nc-skill-pill { display:inline-flex; align-items:center; gap:3px; flex:0 0 auto; padding:3px 7px; border-radius:999px; background:var(--interactive-accent); color:var(--text-on-accent); font-size:11px; }
+.nc-skill-pill button { border:0; padding:0 2px; background:transparent; color:inherit; }
+
+/* Skill execution flow */
+.nc-skill-flow { margin:8px 0; padding:9px; border-radius:9px; background:var(--background-secondary); }
+.nc-skill-flow-title { font-weight:700; color:var(--text-accent); margin-bottom:5px; }
+.nc-skill-step { display:grid; grid-template-columns:minmax(90px,auto) 1fr; gap:8px; padding:4px 0; font-size:11px; }
+.nc-skill-step-label { font-weight:700; }
+.nc-skill-step-detail { color:var(--text-muted); overflow-wrap:anywhere; }
+.nc-skill-step.is-done .nc-skill-step-label { color:var(--text-success); }
+.nc-skill-step.is-running .nc-skill-step-label,.nc-skill-step.is-awaiting .nc-skill-step-label { color:var(--text-accent); }
+.nc-skill-step.is-cancelled { opacity:.55; }
+.nc-skill-flow.is-error { outline:1px solid var(--text-error); }
+.nc-confirm-detail { margin:6px 0; white-space:pre-wrap; color:var(--text-muted); }
