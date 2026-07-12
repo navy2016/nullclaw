@@ -33,6 +33,7 @@ interface StreamResult {
 }
 interface SessionIndexItem { id: string; title: string; updatedAt: number; messageCount: number; }
 interface BuiltinSkill { id: string; label: string; description: string; command: string; }
+interface MemoryOperation { path: string; mode: 'append' | 'write'; content: string; sources: string[]; reason: string; }
 
 const DEFAULT_SETTINGS: NullClawSettings = {
   apiKey: '',
@@ -284,6 +285,10 @@ class NullclawView extends ItemView {
       }
       return;
     }
+    if (cmd === 'retrieve') {
+      if (args.length < 2) return this.println('Usage: /retrieve <query>', 'nc-error');
+      this.println(await this.toolRetrieve(args.slice(1).join(' ')), 'nc-output'); return;
+    }
     if (cmd === 'search') {
       if (args.length < 2) return this.println('Usage: /search <query>', 'nc-error');
       this.println(await this.toolSearch(args.slice(1).join(' ')), 'nc-output');
@@ -390,7 +395,8 @@ class NullclawView extends ItemView {
     await this.ensureMemoryScaffold();
     const palaceContext = await this.loadPalaceContext(message);
     const refContext = await this.resolveMessageReferences(message);
-    const enriched = [this.sessionSummary ? `Compressed session context:\n${this.sessionSummary}` : '', palaceContext, refContext, `User message:\n${message}`].filter(Boolean).join('\n\n---\n\n');
+    const retrievalContext = (!this.attachedRefs.length && !this.attachedSelection) ? await this.retrieveContext(message, 6) : '';
+    const enriched = [this.sessionSummary ? `Compressed session context:\n${this.sessionSummary}` : '', palaceContext, refContext, retrievalContext, `User message:\n${message}`].filter(Boolean).join('\n\n---\n\n');
     const history = this.messages.slice(-20);
     const conversation: any[] = [system, ...history, { role: 'user', content: enriched }];
     const tools = this.toolSchemas();
@@ -548,6 +554,7 @@ class NullclawView extends ItemView {
     });
     return [
       f('vault_current_context', 'Read current Obsidian note and selection.', {}),
+      f('vault_retrieve', 'Rank relevant notes using local title/path/content/recency scoring.', { query: { type: 'string' }, limit: { type: 'number' } }, ['query']),
       f('vault_search', 'Search markdown content and paths.', { query: { type: 'string' }, limit: { type: 'number' } }, ['query']),
       f('vault_glob', 'List paths matching a simple glob pattern.', { pattern: { type: 'string' }, limit: { type: 'number' } }, ['pattern']),
       f('vault_read', 'Read a vault file.', { path: { type: 'string' } }, ['path']),
@@ -578,7 +585,8 @@ ${ctx.selection}
 
 Note:
 ${ctx.text.slice(0, 24000)}` : 'No active markdown note.';
-      } else if (name === 'vault_search') result = await this.toolSearch(String(args.query ?? ''), Number(args.limit ?? 20));
+      } else if (name === 'vault_retrieve') result = await this.toolRetrieve(String(args.query ?? ''), Number(args.limit ?? 8));
+      else if (name === 'vault_search') result = await this.toolSearch(String(args.query ?? ''), Number(args.limit ?? 20));
       else if (name === 'vault_read') result = await this.toolRead(String(args.path ?? ''));
       else if (name === 'vault_list') result = await this.toolList(String(args.folder ?? ''), Number(args.limit ?? 100));
       else if (name === 'vault_write') {
@@ -728,6 +736,38 @@ ${ctx.text.slice(0, 24000)}` : 'No active markdown note.';
     await this.toolWrite(p, old.slice(0, insertAt) + content + old.slice(insertAt));
   }
 
+  private queryTerms(query:string):string[] {
+    const terms=(query.toLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu)||[]).filter(x=>!['the','and','with','this','that','一个','什么','怎么','可以','帮我'].includes(x));
+    return [...new Set(terms)].slice(0,16);
+  }
+
+  private async retrieveNotes(query:string,limit=8):Promise<Array<{path:string;score:number;snippet:string}>> {
+    const terms=this.queryTerms(query); if(!terms.length) return [];
+    const now=Date.now(); const hits:Array<{path:string;score:number;snippet:string}>=[];
+    for(const file of this.app.vault.getMarkdownFiles().slice(0,1500)) {
+      try {
+        const path=file.path.toLowerCase(), name=file.basename.toLowerCase();
+        const text=await this.app.vault.cachedRead(file); const lower=text.toLowerCase(); let score=0; let first=-1;
+        for(const term of terms){
+          if(name===term) score+=24; else if(name.includes(term)) score+=12;
+          if(path.includes(term)) score+=6;
+          const at=lower.indexOf(term); if(at>=0){score+=4; if(first<0)first=at; score+=Math.min(5,lower.split(term).length-1)*1.5;}
+        }
+        const age=Math.max(0,(now-(file.stat?.mtime||0))/86400000); score+=Math.max(0,4-Math.log2(age+1));
+        if(score>4){const at=first>=0?first:0;hits.push({path:file.path,score,snippet:text.slice(Math.max(0,at-100),Math.min(text.length,at+360)).replace(/\s+/g,' ')});}
+      }catch{}
+    }
+    return hits.sort((a,b)=>b.score-a.score).slice(0,limit);
+  }
+
+  private async toolRetrieve(query:string,limit=8):Promise<string>{
+    const hits=await this.retrieveNotes(query,limit);return hits.length?hits.map(h=>`- ${h.path} [${h.score.toFixed(1)}]: ${h.snippet}`).join('\n'):'No relevant notes.';
+  }
+
+  private async retrieveContext(query:string,limit=6):Promise<string>{
+    const hits=await this.retrieveNotes(query,limit);return hits.length?`Locally retrieved note candidates (use vault_read for precision):\n${hits.map(h=>`- ${h.path} [score ${h.score.toFixed(1)}]: ${h.snippet}`).join('\n')}`:'';
+  }
+
   private async toolSearch(query: string, limit = 20): Promise<string> {
     const q = query.toLowerCase();
     if (!q) throw new Error('Missing query');
@@ -855,7 +895,7 @@ ${ctx.text.slice(0, 24000)}` : 'No active markdown note.';
   }
 
   private async ensureMemoryScaffold() {
-    const dirs = ['raw', 'sources', 'memory', 'memory/inbox', 'memory/feedback', 'people', 'projects', 'wiki', 'decisions', 'daily', 'palace', '.nullclaw', '.nullclaw/sessions', '.nullclaw/skills'];
+    const dirs = ['raw', 'sources', 'memory', 'memory/inbox', 'memory/feedback', 'memory/applied', 'people', 'projects', 'wiki', 'decisions', 'daily', 'palace', '.nullclaw', '.nullclaw/sessions', '.nullclaw/skills'];
     for (const d of dirs) {
       try {
         if (!(await this.app.vault.adapter.exists(d))) await this.app.vault.adapter.mkdir(d);
@@ -895,6 +935,11 @@ ${ctx.text.slice(0, 24000)}` : 'No active markdown note.';
         chunks.push(`Context file: ${p}\n${text.slice(0, 6000)}`);
       }
     }
+    try {
+      const listing=await this.app.vault.adapter.list('memory/applied');
+      const latest=[...listing.files].filter((x:string)=>x.endsWith('.json')).sort().slice(-2);
+      for(const path of latest){const raw=await this.app.vault.adapter.read(path);chunks.push(`Recent confirmed memory audit: ${path}\n${raw.slice(0,5000)}`);}
+    } catch {}
     return chunks.length ? `Memory Palace Context:\n\n${chunks.join('\n\n')}` : '';
   }
 
@@ -986,23 +1031,49 @@ ${this.attachedSelection}`);
 
   private async skillApplyMemory(_yes: boolean) {
     await this.runSkillFlow('obsidian-apply-memory', async (flow) => {
-      const inbox = await this.collectFolderText('memory/inbox');
-      if (!inbox) throw new Error('memory/inbox is empty.');
-      flow.step('Read approved candidates', `${inbox.length} chars`, 'done');
-      const prompt = `基于 inbox 生成长期记忆合并计划。按文件分组，目标只允许 people/projects/wiki/decisions/daily/profile.md/style.md。每项包含目标路径、追加/覆盖方式、具体内容和来源。不要声称已经执行。\n\n${inbox.slice(0,30000)}`;
-      const plan = this.settings.apiKey ? await this.callLLM(prompt) : inbox;
-      if (!plan) throw new Error('Apply plan produced no result.');
-      const date = new Date().toISOString().slice(0,10);
-      const out = `memory/apply-plan-${date}.md`;
-      if (!(await this.confirmMutation('Write apply plan', out, plan))) throw new Error('User cancelled plan write.');
-      await this.toolWrite(out, plan); flow.step('Write plan', out, 'done');
-      const approved = await this.confirmOperation('Approve memory plan', out, 'Approve this plan for manual/structured application. Free-form plans are not auto-applied to long-term memory.');
-      if (approved) {
-        await this.toolWrite(`memory/apply-approved-${date}.md`, `# Approved Memory Plan\n\nSource: [[${out}]]\nApproved: ${new Date().toISOString()}\n\n${plan}`);
-        flow.step('Approval', 'Approved plan recorded; long-term writes remain explicit.', 'done');
-      } else flow.step('Approval', 'Not approved', 'cancelled');
-      return approved ? 'Memory plan approved and recorded.' : 'Memory plan saved but not approved.';
+      const inboxFiles=this.app.vault.getMarkdownFiles().filter((f:any)=>f.path.startsWith('memory/inbox/')&&!/review-|apply-/.test(f.path));
+      if(!inboxFiles.length) throw new Error('memory/inbox has no candidate files.');
+      const chunks:string[]=[];
+      for(const f of inboxFiles.slice(0,60)) chunks.push(`SOURCE:${f.path}\n${(await this.app.vault.cachedRead(f)).slice(0,12000)}`);
+      const inbox=chunks.join('\n\n---\n\n'); flow.step('Read inbox',`${inboxFiles.length} source files`,'done');
+      if(!this.settings.apiKey) throw new Error('Structured memory application requires configured LLM.');
+      const prompt=`Return ONLY valid JSON, no markdown fences. Build a conservative long-term memory merge plan from inbox. Schema: {"operations":[{"path":"projects/example.md","mode":"append","content":"...","sources":["memory/inbox/file.md"],"reason":"..."}]}. Allowed targets: people/, projects/, wiki/, decisions/, daily/, profile.md, style.md. mode is append or write. Prefer append. Preserve source wikilinks in content. Never target raw/, sources/, memory/, palace/, .nullclaw/. Omit uncertain claims.\n\n${inbox.slice(0,50000)}`;
+      flow.step('Build structured plan','Requesting validated JSON operations…','running');
+      const response=await this.chatCompletion((this.settings.apiBase||'https://api.openai.com/v1').replace(/\/$/,''),[
+        {role:'system',content:'You produce strict JSON memory migration plans. Output JSON only.'},
+        {role:'user',content:prompt}
+      ],[]);
+      const raw=response.choices?.[0]?.message?.content||response.choices?.[0]?.text||'';
+      const parsed=this.parseMemoryOperations(raw); const ops=parsed.operations;
+      if(!ops.length) throw new Error('No valid memory operations were proposed.');
+      flow.step('Validate plan',`${ops.length} valid operations`,'done');
+      const date=new Date().toISOString().slice(0,10); const stamp=new Date().toISOString(); const audit:any[]=[];
+      await this.toolWrite(`memory/apply-plan-${date}.json`,JSON.stringify({createdAt:stamp,operations:ops},null,2));
+      for(const op of ops){
+        flow.step(op.path,`${op.mode}: ${op.reason}`,'awaiting');
+        const approved=await this.confirmMutation(op.mode==='append'?'Append memory':'Write memory',op.path,op.content);
+        if(!approved){audit.push({...op,status:'cancelled'});flow.step(op.path,'Cancelled','cancelled');continue;}
+        if(op.mode==='append') await this.toolAppend(op.path,op.content); else await this.toolWrite(op.path,op.content);
+        audit.push({...op,status:'applied',appliedAt:new Date().toISOString()});flow.step(op.path,'Applied','done');
+      }
+      const log=`memory/applied/${date}-${Date.now()}.json`; await this.toolWrite(log,JSON.stringify({createdAt:stamp,session:this.sessionId,operations:audit},null,2));
+      const sourceStatus=[...new Set(audit.filter(x=>x.status==='applied').flatMap(x=>x.sources||[]))];
+      if(sourceStatus.length) await this.toolAppend(`memory/applied/index-${date}.md`,`\n## ${stamp}\nAudit: [[${log}]]\nSources:\n${sourceStatus.map(x=>`- [[${x}]]`).join('\n')}\n`);
+      return `Applied ${audit.filter(x=>x.status==='applied').length}/${ops.length} operations. Audit: ${log}`;
     });
+  }
+
+  private parseMemoryOperations(raw:string):{operations:MemoryOperation[]} {
+    const cleaned=raw.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
+    let data:any; try{data=JSON.parse(cleaned);}catch{const a=cleaned.indexOf('{'),b=cleaned.lastIndexOf('}');if(a<0||b<=a)throw new Error('Invalid JSON plan.');data=JSON.parse(cleaned.slice(a,b+1));}
+    const allowed=(p:string)=>/^(people|projects|wiki|decisions|daily)\/.+\.md$/i.test(p)||/^(profile|style)\.md$/i.test(p);
+    const operations:MemoryOperation[]=[];
+    for(const x of Array.isArray(data.operations)?data.operations:[]){
+      const path=this.normalizePath(String(x.path||''));const mode=x.mode==='write'?'write':'append';const content=String(x.content||'').trim();
+      if(!allowed(path)||!content)continue;
+      operations.push({path,mode,content,sources:Array.isArray(x.sources)?x.sources.map(String):[],reason:String(x.reason||'Memory consolidation')});
+    }
+    return {operations:operations.slice(0,40)};
   }
 
   private async skillUpdateProfile() {
