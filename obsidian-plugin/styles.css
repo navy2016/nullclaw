@@ -343,15 +343,12 @@ body.is-mobile .nullclaw-input-wrap {
 .nc-message {
   padding: 9px 10px;
   border-radius: 8px;
-  border-left: 3px solid transparent;
 }
 .nc-message-user {
   background: color-mix(in srgb, var(--interactive-accent) 13%, var(--background-primary));
-  border-left-color: var(--interactive-accent);
 }
 .nc-message-assistant {
   background: color-mix(in srgb, #3aa675 12%, var(--background-primary));
-  border-left-color: #3aa675;
 }
 .nc-message-user .nc-message-header { color: var(--interactive-accent); }
 .nc-message-assistant .nc-message-header { color: #3aa675; }
@@ -360,20 +357,16 @@ body.is-mobile .nullclaw-input-wrap {
   line-height: 1.55;
 }
 .nc-tool-block {
-  border-left: 3px solid #d99a35;
   background: color-mix(in srgb, #d99a35 11%, var(--background-primary));
 }
 .nc-tool-block summary { color: #d99a35; font-weight: 650; }
 .nc-stream-card {
-  border-left: 3px solid #3aa675;
   background: color-mix(in srgb, #3aa675 10%, var(--background-primary));
 }
 .nc-confirm-card {
-  border-left: 3px solid #bb6bd9;
   background: color-mix(in srgb, #bb6bd9 10%, var(--background-primary));
 }
 .nc-skill-flow {
-  border-left: 3px solid #5f8dd3;
   background: color-mix(in srgb, #5f8dd3 10%, var(--background-primary));
 }
 .nullclaw-output .nc-info {
@@ -381,7 +374,6 @@ body.is-mobile .nullclaw-input-wrap {
   width: 100%;
   box-sizing: border-box;
   padding: 6px 8px;
-  border-left: 3px solid var(--text-muted);
   border-radius: 6px;
   background: color-mix(in srgb, var(--text-muted) 7%, var(--background-primary));
 }
@@ -390,7 +382,6 @@ body.is-mobile .nullclaw-input-wrap {
   width: 100%;
   box-sizing: border-box;
   padding: 7px 8px;
-  border-left: 3px solid var(--text-error);
   border-radius: 6px;
   background: color-mix(in srgb, var(--text-error) 10%, var(--background-primary));
 }
@@ -408,3 +399,20 @@ body.is-mobile .nullclaw-input-wrap {
   .nc-tool-result,
   .nc-diff { max-height: 220px; }
 }
+
+/* Pale backgrounds only — no message accent bars. */
+.nc-message,
+.nc-stream-card,
+.nc-tool-block,
+.nc-confirm-card,
+.nc-skill-flow,
+.nullclaw-output .nc-info,
+.nullclaw-output .nc-error {
+  border-left: 0 !important;
+}
+.nc-palace-route { width:100%; box-sizing:border-box; margin:5px 0; padding:6px 8px; border-radius:7px; background:color-mix(in srgb, #8f73c7 8%, var(--background-primary)); }
+.nc-palace-route summary { color:#8f73c7; font-size:10px; cursor:pointer; }
+.nc-palace-route pre { white-space:pre-wrap; font-size:10px; color:var(--text-muted); }
+.nc-message-body p:first-child { margin-top:0; }
+.nc-message-body p:last-child { margin-bottom:0; }
+.nc-message-body pre { overflow-x:auto; padding:7px; border-radius:6px; }

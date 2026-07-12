@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceLeaf, ItemView, Setting, PluginSettingTab, MarkdownView, requestUrl } from 'obsidian';
+import { Plugin, WorkspaceLeaf, ItemView, Setting, PluginSettingTab, MarkdownView, MarkdownRenderer, TFile, requestUrl } from 'obsidian';
 import { runNullclaw } from './wasi-shim';
 
 const VIEW_TYPE = 'nullclaw-agent-view';
@@ -76,6 +76,7 @@ class NullclawView extends ItemView {
   private attachedRefs: string[] = [];
   private attachedSelection = '';
   private contextStats: Record<string, number> = {};
+  private lastPalaceRooms: string[] = [];
 
   constructor(leaf: WorkspaceLeaf, settings: NullClawSettings) {
     super(leaf);
@@ -418,6 +419,7 @@ class NullclawView extends ItemView {
 
     await this.ensureMemoryScaffold();
     const palaceContext = this.limitText(await this.loadPalaceContext(message), 18000);
+    this.renderPalaceRoute();
     const refContext = this.limitText(await this.resolveMessageReferences(message), 30000);
     const retrievalContext = (!this.attachedRefs.length && !this.attachedSelection) ? this.limitText(await this.retrieveContext(message, 6), 10000) : '';
     const summaryContext = this.limitText(this.sessionSummary ? `Compressed session context:\n${this.sessionSummary}` : '', 10000);
@@ -525,6 +527,7 @@ class NullclawView extends ItemView {
       if (card) {
         card.details.open = true;
         card.body.classList.add('nc-stream-complete');
+        card.body.empty(); await this.renderMarkdown(content, card.body);
         this.responseWasStreamed = true;
       }
       return { choices: [{ message: { role: 'assistant', content, tool_calls: toolCalls.length ? toolCalls : undefined } }] };
@@ -960,6 +963,7 @@ ${ctx.text.slice(0, 24000)}` : 'No active markdown note.';
     if (/apply|应用.*记忆|沉淀.*长期/.test(intent)) candidates.push('palace/apply_memory_room.md');
     if (/profile|画像|风格/.test(intent)) candidates.push('palace/update_profile_room.md');
     if (/doctor|体检|断链|孤立/.test(intent)) candidates.push('palace/vault_doctor_room.md');
+    this.lastPalaceRooms = [...new Set(candidates.filter(x => x.startsWith('palace/')))];
     const chunks: string[] = [];
     for (const p of candidates) {
       if (await this.app.vault.adapter.exists(p)) {
@@ -1207,19 +1211,26 @@ ${this.attachedSelection}`);
 
   private async skillVaultDoctor() {
     await this.runSkillFlow('obsidian-vault-doctor', async (flow) => {
-      const files = this.app.vault.getFiles(); const markdown = this.app.vault.getMarkdownFiles();
-      const raw = files.filter((f:any)=>f.path.startsWith('raw/')); const empty:string[]=[]; const broken:string[]=[];
-      for (const f of markdown.slice(0,800)) {
-        try {
-          const text = await this.app.vault.cachedRead(f); if (text.trim().length < 20) empty.push(f.path);
-          for (const l of this.app.metadataCache.getFileCache(f)?.links ?? []) if (!this.app.metadataCache.getFirstLinkpathDest(l.link,f.path)) broken.push(`${f.path} → ${l.link}`);
-        } catch {}
+      const files=this.app.vault.getFiles(),markdown=this.app.vault.getMarkdownFiles(),now=Date.now();
+      const raw=files.filter((f:any)=>f.path.startsWith('raw/'));const empty:string[]=[],broken:string[]=[],orphans:string[]=[],staleProjects:string[]=[];
+      const incoming=new Map<string,number>();const titles=new Map<string,string[]>();
+      for(const f of markdown){titles.set(f.basename,[...(titles.get(f.basename)||[]),f.path]);incoming.set(f.path,0);}
+      for(const f of markdown.slice(0,1200)){
+        try{
+          const text=await this.app.vault.cachedRead(f);if(text.trim().length<20)empty.push(f.path);
+          const links=this.app.metadataCache.getFileCache(f)?.links??[];
+          for(const l of links){const dest=this.app.metadataCache.getFirstLinkpathDest(l.link,f.path);if(!dest)broken.push(`${f.path} → ${l.link}`);else incoming.set(dest.path,(incoming.get(dest.path)||0)+1);}
+          if(f.path.startsWith('projects/')&&(now-(f.stat?.mtime||0))/86400000>90)staleProjects.push(f.path);
+        }catch{}
       }
-      flow.step('Scan vault', `${files.length} files`, 'done');
-      const report = `# Vault Doctor\n\n- files: ${files.length}\n- markdown: ${markdown.length}\n- raw: ${raw.length}\n- empty: ${empty.length}\n- broken links: ${broken.length}\n\n## Empty\n${empty.slice(0,80).map(x=>'- '+x).join('\n')||'None'}\n\n## Broken links\n${broken.slice(0,120).map(x=>'- '+x).join('\n')||'None'}\n\n## Raw\n${raw.slice(0,80).map((x:any)=>'- '+x.path).join('\n')||'None'}\n`;
+      for(const f of markdown)if((incoming.get(f.path)||0)===0&&!(this.app.metadataCache.getFileCache(f)?.links?.length))orphans.push(f.path);
+      const duplicateTitles=[...titles.entries()].filter(([,paths])=>paths.length>1);
+      const unprocessedRaw:string[]=[];
+      for(const f of raw){const stem=f.path.slice(4).replace(/\.[^.]+$/,'');if(!(await this.app.vault.adapter.exists(`sources/${stem}.md`)))unprocessedRaw.push(f.path);}
+      flow.step('Scan vault',`${files.length} files · ${markdown.length} notes`,'done');
+      const report=`# Vault Doctor\n\nGenerated: ${new Date().toISOString()}\n\n## Summary\n\n- Files: ${files.length}\n- Markdown: ${markdown.length}\n- Raw: ${raw.length}\n- Unprocessed raw: ${unprocessedRaw.length}\n- Empty notes: ${empty.length}\n- Broken links: ${broken.length}\n- Orphan notes: ${orphans.length}\n- Duplicate titles: ${duplicateTitles.length}\n- Projects stale >90 days: ${staleProjects.length}\n\n## Unprocessed raw\n${unprocessedRaw.slice(0,120).map(x=>'- '+x).join('\n')||'None'}\n\n## Empty notes\n${empty.slice(0,100).map(x=>'- '+x).join('\n')||'None'}\n\n## Broken links\n${broken.slice(0,160).map(x=>'- '+x).join('\n')||'None'}\n\n## Orphan notes\n${orphans.slice(0,140).map(x=>'- '+x).join('\n')||'None'}\n\n## Duplicate titles\n${duplicateTitles.slice(0,100).map(([title,paths])=>`- ${title}: ${paths.join(', ')}`).join('\n')||'None'}\n\n## Stale projects\n${staleProjects.slice(0,100).map(x=>'- '+x).join('\n')||'None'}\n\n## Recommended actions\n\n1. Process raw evidence into sources; never delete raw automatically.\n2. Repair broken links with explicit confirmation.\n3. Review orphan notes before linking or archiving.\n4. Review stale projects and update status explicitly.\n`;
       const out=`memory/vault-doctor-${new Date().toISOString().slice(0,10)}.md`;
-      if (!(await this.confirmMutation('Write doctor report',out,report))) throw new Error('User cancelled report.');
-      await this.toolWrite(out,report); flow.step('Write report',out,'done'); return `Vault doctor report: ${out}`;
+      if(!(await this.confirmMutation('Write doctor report',out,report)))throw new Error('User cancelled report.');await this.toolWrite(out,report);flow.step('Write report',out,'done');return `Vault doctor report: ${out}`;
     });
   }
 
@@ -1578,13 +1589,47 @@ ${this.attachedSelection}`);
     }
   }
 
+  private async renderMarkdown(text:string,container:HTMLElement) {
+    try { await MarkdownRenderer.render(this.app,text,container,'',this); }
+    catch { container.textContent=text; }
+  }
+
+  private renderPalaceRoute() {
+    if(!this.lastPalaceRooms.length)return;
+    const details=this.outputEl.createEl('details',{cls:'nc-palace-route'});
+    details.createEl('summary',{text:`🏛️ Memory Palace · ${this.lastPalaceRooms.map(x=>x.split('/').pop()?.replace('.md','')).join(' + ')}`});
+    details.createEl('pre',{text:this.lastPalaceRooms.join('\n')});
+  }
+
+  private async saveAssistantMessage(text:string) {
+    const now=new Date();const stamp=now.toISOString().replace(/[:.]/g,'-');const path=`sources/nullclaw-response-${stamp}.md`;
+    const content=`---\nsource: nullclaw-session\nsession: ${this.sessionId}\ncreated: ${now.toISOString()}\n---\n\n# NullClaw response\n\n${text}\n`;
+    if(await this.confirmMutation('Save response',path,content)){await this.toolWrite(path,content);this.println(`Saved to ${path}`,'nc-info');}
+  }
+
+  async attachPath(path:string) {
+    if(!this.attachedRefs.includes(path))this.attachedRefs.push(path);this.renderRefs();await this.saveSession();this.println(`Attached: ${path}`,'nc-info');
+  }
+
+  async digestPath(path:string) {
+    await this.attachPath(path);const text=await this.toolRead(path);
+    await this.runSkillFlow('obsidian-digest-note',async flow=>{
+      flow.step('Read note',path,'done');
+      const prompt=`消化这篇 Obsidian 笔记，提取要点、人物、项目、概念、决策、待办和可沉淀记忆候选。保留来源 ${path}，不要直接写长期记忆。\n\n${text.slice(0,30000)}`;
+      const result=this.settings.apiKey?await this.callLLM(prompt):`# Digest: ${path}\n\n${text.slice(0,4000)}`;if(!result)throw new Error('No digest result.');
+      const out=`memory/inbox/${new Date().toISOString().slice(0,10)}.md`;const entry=`\n## ${new Date().toLocaleString()} — ${path}\n\n${result}\n`;
+      if(!(await this.confirmMutation('Append inbox',out,entry)))throw new Error('Cancelled.');await this.toolAppend(out,entry);return `Digest written to ${out}`;
+    });
+  }
+
   private renderMessageCard(role: 'user' | 'assistant', text: string, forceStick: boolean) {
     const shouldStick = forceStick || this.isNearBottom();
     const card = this.outputEl.createDiv({ cls: `nc-message nc-message-${role}` });
     const header = card.createDiv({ cls: 'nc-message-header' });
     header.createSpan({ text: role === 'user' ? 'You' : 'NullClaw' });
     const body = card.createDiv({ cls: 'nc-message-body' });
-    body.textContent = text;
+    if (role === 'assistant') void this.renderMarkdown(text, body);
+    else body.textContent = text;
     if (role === 'assistant') {
       const actions = card.createDiv({ cls: 'nc-message-actions' });
       const copy = actions.createEl('button', { text: 'Copy' });
@@ -1600,6 +1645,8 @@ ${this.attachedSelection}`);
       good.addEventListener('click', () => void this.writeFeedback('good', text.slice(0, 1000)));
       const bad = actions.createEl('button', { text: '👎' });
       bad.addEventListener('click', () => void this.writeFeedback('bad', text.slice(0, 1000)));
+      const save = actions.createEl('button', { text: 'Save note' });
+      save.addEventListener('click', () => void this.saveAssistantMessage(text));
     }
     if (shouldStick) this.stickToBottom();
     return body;
@@ -1615,7 +1662,8 @@ ${this.attachedSelection}`);
 
   private createToolBlock(name: string, args: any) {
     const details = this.outputEl.createEl('details', { cls: 'nc-tool-block' });
-    details.createEl('summary', { text: `Tool · ${name}` });
+    const icon = name.includes('read') ? '📖' : name.includes('search') || name.includes('retrieve') || name.includes('glob') ? '🔎' : name.includes('write') || name.includes('append') || name.includes('insert') ? '✍️' : name.includes('delete') ? '🗑️' : name.includes('move') ? '↔️' : name.includes('memory') ? '🧠' : '🔧';
+    details.createEl('summary', { text: `${icon} ${name}` });
     details.createEl('pre', { cls: 'nc-tool-args', text: JSON.stringify(args, null, 2) });
     const result = details.createEl('pre', { cls: 'nc-tool-result', text: 'Running…' });
     if (this.isNearBottom()) this.stickToBottom();
@@ -1884,6 +1932,15 @@ export default class NullClawPlugin extends Plugin {
     command('run-vault-doctor', 'Run Vault doctor', 'vault-doctor');
     command('extract-memory-candidates', 'Extract memory candidates from conversation', 'remember');
     command('review-memory-candidates', 'Review pending memory candidates', 'memory-candidates');
+    this.registerEvent(this.app.workspace.on('file-menu', (menu: any, file: any) => {
+      if (!(file instanceof TFile) || file.extension !== 'md') return;
+      menu.addItem((item: any) => item.setTitle('Attach to NullClaw').setIcon('paperclip').onClick(async () => { await this.openView(); await this.view?.attachPath(file.path); }));
+      menu.addItem((item: any) => item.setTitle('Digest with NullClaw').setIcon('bot').onClick(async () => { await this.openView(); await this.view?.digestPath(file.path); }));
+    }));
+    this.registerEvent(this.app.workspace.on('editor-menu', (menu: any, editor: any, view: any) => {
+      const selection=editor.getSelection?.() || ''; if(!selection)return;
+      menu.addItem((item: any)=>item.setTitle('Digest selection with NullClaw').setIcon('bot').onClick(async()=>{await this.openView(); await this.view?.invokeCommand('selection'); await this.view?.invokeCommand('digest-current');}));
+    }));
     this.addSettingTab(new NullClawSettingTab(this.app, this));
   }
 
