@@ -246,3 +246,14 @@ body.is-mobile .nullclaw-input-wrap {
 .nc-skill-step.is-cancelled { opacity:.55; }
 .nc-skill-flow.is-error { outline:1px solid var(--text-error); }
 .nc-confirm-detail { margin:6px 0; white-space:pre-wrap; color:var(--text-muted); }
+
+/* Structured memory candidate review */
+.nc-memory-candidates { margin:8px 0; }
+.nc-memory-head { font-weight:700; color:var(--text-accent); margin-bottom:6px; }
+.nc-memory-card { margin:6px 0; padding:8px; border-radius:9px; background:var(--background-secondary); }
+.nc-memory-card-head { display:flex; justify-content:space-between; gap:8px; color:var(--text-muted); font-size:10px; }
+.nc-memory-content { margin:6px 0; white-space:pre-wrap; }
+.nc-memory-reason,.nc-memory-sources { color:var(--text-muted); font-size:10px; margin-top:3px; }
+.nc-memory-actions { display:flex; justify-content:flex-end; gap:7px; margin-top:7px; }
+.nc-memory-card.is-approved { outline:1px solid var(--text-success); opacity:.78; }
+.nc-memory-card.is-rejected { opacity:.48; }

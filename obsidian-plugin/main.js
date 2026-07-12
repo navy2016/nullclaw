@@ -757,6 +757,24 @@ var NullclawView = class extends import_obsidian.ItemView {
       this.println("Memory scaffold initialized.", "nc-output");
       return;
     }
+    if (cmd === "remember") {
+      await this.skillRemember(args.slice(1).join(" "));
+      return;
+    }
+    if (cmd === "memory-candidates") {
+      await this.showMemoryCandidates(args[1] || "pending");
+      return;
+    }
+    if (cmd === "memory-approve") {
+      if (!args[1]) return this.println("Usage: /memory-approve <id>", "nc-error");
+      await this.setCandidateStatus(args[1], "approved");
+      return;
+    }
+    if (cmd === "memory-reject") {
+      if (!args[1]) return this.println("Usage: /memory-reject <id>", "nc-error");
+      await this.setCandidateStatus(args[1], "rejected");
+      return;
+    }
     if (cmd === "current") {
       const ctx = this.getActiveMarkdownContext();
       if (!ctx) return this.println("No active markdown note.", "nc-error");
@@ -1079,6 +1097,8 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
       function: { name, description, parameters: { type: "object", properties, ...required.length ? { required } : {} } }
     });
     return [
+      f("memory_candidate_create", "Create a pending structured memory candidate in inbox. This never writes long-term memory.", { category: { type: "string", enum: ["people", "projects", "wiki", "decisions", "daily", "profile", "style"] }, content: { type: "string" }, sources: { type: "array", items: { type: "string" } }, confidence: { type: "number" }, reason: { type: "string" } }, ["category", "content", "reason"]),
+      f("memory_candidate_list", "List structured memory candidates by status.", { status: { type: "string", enum: ["pending", "approved", "rejected", "all"] } }),
       f("vault_current_context", "Read current Obsidian note and selection.", {}),
       f("vault_retrieve", "Rank relevant notes using local title/path/content/recency scoring.", { query: { type: "string" }, limit: { type: "number" } }, ["query"]),
       f("vault_search", "Search markdown content and paths.", { query: { type: "string" }, limit: { type: "number" } }, ["query"]),
@@ -1102,7 +1122,12 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
     const block = this.createToolBlock(name, args);
     try {
       let result = "";
-      if (name === "vault_current_context") {
+      if (name === "memory_candidate_create") {
+        const c = this.normalizeCandidate(args);
+        await this.saveMemoryCandidate(c);
+        result = `Created pending candidate ${c.id}`;
+      } else if (name === "memory_candidate_list") result = await this.listMemoryCandidates(String(args.status || "pending"));
+      else if (name === "vault_current_context") {
         const ctx = this.getActiveMarkdownContext();
         result = ctx ? `Path: ${ctx.path}
 Selection:
@@ -1308,7 +1333,7 @@ ${incoming.join("\n") || "None"}`;
     if (!terms.length) return [];
     const now = Date.now();
     const hits = [];
-    for (const file of this.app.vault.getMarkdownFiles().slice(0, 1500)) {
+    for (const file of this.app.vault.getMarkdownFiles().filter((f) => !/^(memory\/applied|memory\/inbox\/candidates|\.nullclaw|palace)\//.test(f.path)).slice(0, 1500)) {
       try {
         const path = file.path.toLowerCase(), name = file.basename.toLowerCase();
         const text = await this.app.vault.cachedRead(file);
@@ -1459,7 +1484,7 @@ ${hits.map((h) => `- ${h.path} [score ${h.score.toFixed(1)}]: ${h.snippet}`).joi
     setTimeout(apply, 300);
   }
   async ensureMemoryScaffold() {
-    const dirs = ["raw", "sources", "memory", "memory/inbox", "memory/feedback", "memory/applied", "people", "projects", "wiki", "decisions", "daily", "palace", ".nullclaw", ".nullclaw/sessions", ".nullclaw/skills"];
+    const dirs = ["raw", "sources", "memory", "memory/inbox", "memory/inbox/candidates", "memory/feedback", "memory/applied", "people", "projects", "wiki", "decisions", "daily", "palace", ".nullclaw", ".nullclaw/sessions", ".nullclaw/skills"];
     for (const d of dirs) {
       try {
         if (!await this.app.vault.adapter.exists(d)) await this.app.vault.adapter.mkdir(d);
@@ -1572,6 +1597,136 @@ ${text}`);
       this.println("Context compacted and persisted.\n" + summary, "nc-output");
     }
   }
+  candidatePath(id) {
+    return `memory/inbox/candidates/${id}.json`;
+  }
+  normalizeCandidate(input) {
+    const categories = ["people", "projects", "wiki", "decisions", "daily", "profile", "style"];
+    const category = categories.includes(String(input.category)) ? String(input.category) : "wiki";
+    const content = String(input.content || "").trim();
+    if (!content) throw new Error("Memory candidate content is empty.");
+    const sources = Array.isArray(input.sources) ? input.sources.map(String).filter(Boolean).slice(0, 20) : [];
+    const confidence = Math.max(0, Math.min(1, Number(input.confidence ?? 0.6)));
+    const hash = this.fastHash(`${category}|${content.toLowerCase().replace(/\s+/g, " ")}`);
+    return { id: `mc-${hash}`, category, content, sources, confidence, reason: String(input.reason || "Conversation memory candidate"), status: "pending", createdAt: (/* @__PURE__ */ new Date()).toISOString() };
+  }
+  fastHash(text) {
+    let h = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(36);
+  }
+  async saveMemoryCandidate(candidate) {
+    await this.ensureMemoryScaffold();
+    const path = this.candidatePath(candidate.id);
+    if (await this.app.vault.adapter.exists(path)) {
+      const old = JSON.parse(await this.app.vault.adapter.read(path));
+      if (old.status !== "rejected") candidate.status = old.status;
+      candidate.sources = [.../* @__PURE__ */ new Set([...old.sources || [], ...candidate.sources])];
+      candidate.createdAt = old.createdAt || candidate.createdAt;
+    }
+    await this.toolWrite(path, JSON.stringify(candidate, null, 2));
+  }
+  async loadMemoryCandidates(status = "all") {
+    await this.ensureMemoryScaffold();
+    const listing = await this.app.vault.adapter.list("memory/inbox/candidates");
+    const out = [];
+    for (const path of listing.files.filter((x) => x.endsWith(".json"))) {
+      try {
+        const c = JSON.parse(await this.app.vault.adapter.read(path));
+        if (status === "all" || c.status === status) out.push(c);
+      } catch {
+      }
+    }
+    return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  async listMemoryCandidates(status = "pending") {
+    const items = await this.loadMemoryCandidates(status);
+    return items.length ? items.slice(0, 100).map((c) => `- ${c.id} [${c.status}] ${c.category} ${(c.confidence * 100).toFixed(0)}%: ${c.content}
+  sources: ${c.sources.join(", ") || "conversation"}`).join("\n") : "No candidates.";
+  }
+  async showMemoryCandidates(status = "pending") {
+    const items = await this.loadMemoryCandidates(status);
+    if (!items.length) {
+      this.println("No candidates.", "nc-info");
+      return;
+    }
+    const panel = this.outputEl.createDiv({ cls: "nc-memory-candidates" });
+    panel.createDiv({ cls: "nc-memory-head", text: `Memory candidates \xB7 ${status} (${items.length})` });
+    for (const c of items.slice(0, 100)) {
+      const card = panel.createDiv({ cls: `nc-memory-card is-${c.status}` });
+      const head = card.createDiv({ cls: "nc-memory-card-head" });
+      head.createSpan({ text: `${c.category} \xB7 ${(c.confidence * 100).toFixed(0)}%` });
+      head.createSpan({ text: c.id });
+      card.createDiv({ cls: "nc-memory-content", text: c.content });
+      card.createDiv({ cls: "nc-memory-reason", text: c.reason });
+      if (c.sources.length) card.createDiv({ cls: "nc-memory-sources", text: `Sources: ${c.sources.join(", ")}` });
+      if (c.status === "pending") {
+        const actions = card.createDiv({ cls: "nc-memory-actions" });
+        const yes = actions.createEl("button", { cls: "mod-cta", text: "Approve" });
+        const no = actions.createEl("button", { text: "Reject" });
+        yes.addEventListener("click", async () => {
+          await this.setCandidateStatus(c.id, "approved");
+          card.addClass("is-approved");
+          yes.disabled = true;
+          no.disabled = true;
+        });
+        no.addEventListener("click", async () => {
+          await this.setCandidateStatus(c.id, "rejected");
+          card.addClass("is-rejected");
+          yes.disabled = true;
+          no.disabled = true;
+        });
+      }
+    }
+    this.stickToBottom();
+  }
+  async setCandidateStatus(id, status) {
+    const path = this.candidatePath(id);
+    if (!await this.app.vault.adapter.exists(path)) throw new Error(`Candidate not found: ${id}`);
+    const c = JSON.parse(await this.app.vault.adapter.read(path));
+    if (!await this.confirmOperation(`${status === "approved" ? "Approve" : "Reject"} candidate`, id, `${c.category} ${(c.confidence * 100).toFixed(0)}%
+${c.content}`)) return;
+    c.status = status;
+    await this.toolWrite(path, JSON.stringify(c, null, 2));
+    this.println(`Candidate ${id} marked ${status}.`, "nc-output");
+  }
+  async skillRemember(note = "") {
+    await this.runSkillFlow("obsidian-remember", async (flow) => {
+      if (!this.settings.apiKey) throw new Error("Memory extraction requires configured LLM.");
+      const transcript = this.messages.slice(-30).map((m) => `${m.role}: ${m.content}`).join("\n");
+      if (!transcript.trim()) throw new Error("Current session has no messages.");
+      flow.step("Read conversation", `${this.messages.length} messages`, "done");
+      const prompt = `Extract only durable, useful memory candidates from this conversation. Return ONLY JSON: {"candidates":[{"category":"people|projects|wiki|decisions|daily|profile|style","content":"atomic fact","sources":["session:${this.sessionId}"],"confidence":0.0,"reason":"why durable"}]}. Omit transient chat, uncertain facts, generic knowledge and duplicates. User note: ${note || "(none)"}
+
+${transcript.slice(-4e4)}`;
+      const response = await this.chatCompletion((this.settings.apiBase || "https://api.openai.com/v1").replace(/\/$/, ""), [{ role: "system", content: "You extract conservative structured memory candidates. JSON only." }, { role: "user", content: prompt }], []);
+      const raw = response.choices?.[0]?.message?.content || response.choices?.[0]?.text || "";
+      const clean = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+      let data;
+      try {
+        data = JSON.parse(clean);
+      } catch {
+        throw new Error("Invalid candidate JSON.");
+      }
+      const candidates = [];
+      for (const x of Array.isArray(data.candidates) ? data.candidates : []) {
+        try {
+          const c = this.normalizeCandidate(x);
+          if (c.confidence >= 0.45) candidates.push(c);
+        } catch {
+        }
+      }
+      flow.step("Validate", `${candidates.length} candidates`, "done");
+      for (const c of candidates) {
+        await this.saveMemoryCandidate(c);
+        flow.step(c.id, `${c.category} ${(c.confidence * 100).toFixed(0)}%`, "done");
+      }
+      return `Saved ${candidates.length} pending candidates. Review with /memory-candidates.`;
+    });
+  }
   async skillDigestCurrent() {
     await this.runSkillFlow("obsidian-digest-note", async (flow) => {
       const ctx = this.getActiveMarkdownContext();
@@ -1624,13 +1779,15 @@ ${inbox.slice(0, 3e4)}`;
   }
   async skillApplyMemory(_yes) {
     await this.runSkillFlow("obsidian-apply-memory", async (flow) => {
-      const inboxFiles = this.app.vault.getMarkdownFiles().filter((f) => f.path.startsWith("memory/inbox/") && !/review-|apply-/.test(f.path));
-      if (!inboxFiles.length) throw new Error("memory/inbox has no candidate files.");
-      const chunks = [];
-      for (const f of inboxFiles.slice(0, 60)) chunks.push(`SOURCE:${f.path}
-${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
+      const approved = await this.loadMemoryCandidates("approved");
+      const inboxFiles = this.app.vault.getMarkdownFiles().filter((f) => f.path.startsWith("memory/inbox/") && !f.path.startsWith("memory/inbox/candidates/") && !/review-|apply-/.test(f.path));
+      if (!approved.length && !inboxFiles.length) throw new Error("No approved candidates or legacy inbox files.");
+      const chunks = approved.map((c) => `APPROVED:${c.id} category=${c.category} confidence=${c.confidence} sources=${c.sources.join(",")}
+${c.content}`);
+      for (const f of inboxFiles.slice(0, 40)) chunks.push(`SOURCE:${f.path}
+${(await this.app.vault.cachedRead(f)).slice(0, 1e4)}`);
       const inbox = chunks.join("\n\n---\n\n");
-      flow.step("Read inbox", `${inboxFiles.length} source files`, "done");
+      flow.step("Read inbox", `${approved.length} approved candidates, ${inboxFiles.length} legacy files`, "done");
       if (!this.settings.apiKey) throw new Error("Structured memory application requires configured LLM.");
       const prompt = `Return ONLY valid JSON, no markdown fences. Build a conservative long-term memory merge plan from inbox. Schema: {"operations":[{"path":"projects/example.md","mode":"append","content":"...","sources":["memory/inbox/file.md"],"reason":"..."}]}. Allowed targets: people/, projects/, wiki/, decisions/, daily/, profile.md, style.md. mode is append or write. Prefer append. Preserve source wikilinks in content. Never target raw/, sources/, memory/, palace/, .nullclaw/. Omit uncertain claims.
 
@@ -1651,8 +1808,8 @@ ${inbox.slice(0, 5e4)}`;
       await this.toolWrite(`memory/apply-plan-${date}.json`, JSON.stringify({ createdAt: stamp, operations: ops }, null, 2));
       for (const op of ops) {
         flow.step(op.path, `${op.mode}: ${op.reason}`, "awaiting");
-        const approved = await this.confirmMutation(op.mode === "append" ? "Append memory" : "Write memory", op.path, op.content);
-        if (!approved) {
+        const approved2 = await this.confirmMutation(op.mode === "append" ? "Append memory" : "Write memory", op.path, op.content);
+        if (!approved2) {
           audit.push({ ...op, status: "cancelled" });
           flow.step(op.path, "Cancelled", "cancelled");
           continue;
@@ -1664,6 +1821,10 @@ ${inbox.slice(0, 5e4)}`;
       }
       const log = `memory/applied/${date}-${Date.now()}.json`;
       await this.toolWrite(log, JSON.stringify({ createdAt: stamp, session: this.sessionId, operations: audit }, null, 2));
+      if (audit.some((x) => x.status === "applied")) for (const candidate of approved) {
+        candidate.status = "applied";
+        await this.toolWrite(this.candidatePath(candidate.id), JSON.stringify(candidate, null, 2));
+      }
       const sourceStatus = [...new Set(audit.filter((x) => x.status === "applied").flatMap((x) => x.sources || []))];
       if (sourceStatus.length) await this.toolAppend(`memory/applied/index-${date}.md`, `
 ## ${stamp}
@@ -1965,6 +2126,7 @@ ${input || "(none)"}`);
   builtinSkills() {
     const builtins = [
       { id: "compact", label: "Compact context", description: "\u538B\u7F29\u5F53\u524D\u4F1A\u8BDD\u4E0A\u4E0B\u6587", command: "/compact" },
+      { id: "remember", label: "Extract memory", description: "\u4ECE\u5F53\u524D\u4F1A\u8BDD\u63D0\u53D6\u5F85\u5BA1\u6838\u8BB0\u5FC6\u5019\u9009", command: "/remember" },
       { id: "digest", label: "Digest current note", description: "\u6D88\u5316\u5F53\u524D\u7B14\u8BB0\u6216\u9009\u533A\u5230 inbox", command: "/digest-current" },
       { id: "review", label: "Review inbox", description: "\u5BA1\u6838\u5F85\u6C89\u6DC0\u5185\u5BB9", command: "/review-inbox" },
       { id: "apply", label: "Apply memory", description: "\u786E\u8BA4\u540E\u5408\u5E76\u957F\u671F\u8BB0\u5FC6", command: "/apply-memory" },
@@ -2463,6 +2625,8 @@ var NullClawPlugin = class extends import_obsidian.Plugin {
     command("apply-memory-plan", "Apply memory plan", "apply-memory");
     command("update-user-profile", "Update user profile", "update-profile");
     command("run-vault-doctor", "Run Vault doctor", "vault-doctor");
+    command("extract-memory-candidates", "Extract memory candidates from conversation", "remember");
+    command("review-memory-candidates", "Review pending memory candidates", "memory-candidates");
     this.addSettingTab(new NullClawSettingTab(this.app, this));
   }
   async loadSettings() {
