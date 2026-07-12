@@ -297,3 +297,114 @@ body.is-mobile .nullclaw-input-wrap {
   .nc-session-row-actions { display:grid; grid-template-columns:repeat(3,1fr); }
   .nc-session-row-actions button { min-height:30px; }
 }
+
+/* Compact mobile conversation layout: hide visual scrollbars, keep touch scrolling. */
+.nullclaw-output,
+.nc-session-list,
+.nullclaw-mention-menu,
+.nullclaw-skill-menu,
+.nullclaw-refs,
+.nc-tool-args,
+.nc-tool-result,
+.nc-diff {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.nullclaw-output::-webkit-scrollbar,
+.nc-session-list::-webkit-scrollbar,
+.nullclaw-mention-menu::-webkit-scrollbar,
+.nullclaw-skill-menu::-webkit-scrollbar,
+.nullclaw-refs::-webkit-scrollbar,
+.nc-tool-args::-webkit-scrollbar,
+.nc-tool-result::-webkit-scrollbar,
+.nc-diff::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Use nearly all narrow-screen width. Color and accent bar identify message type. */
+.nullclaw-output {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.nc-message,
+.nc-stream-card,
+.nc-tool-block,
+.nc-confirm-card,
+.nc-skill-flow,
+.nc-memory-card {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  margin-left: 0;
+  margin-right: 0;
+}
+.nc-message {
+  padding: 9px 10px;
+  border-radius: 8px;
+  border-left: 3px solid transparent;
+}
+.nc-message-user {
+  background: color-mix(in srgb, var(--interactive-accent) 13%, var(--background-primary));
+  border-left-color: var(--interactive-accent);
+}
+.nc-message-assistant {
+  background: color-mix(in srgb, #3aa675 12%, var(--background-primary));
+  border-left-color: #3aa675;
+}
+.nc-message-user .nc-message-header { color: var(--interactive-accent); }
+.nc-message-assistant .nc-message-header { color: #3aa675; }
+.nc-message-body {
+  font-size: 13px;
+  line-height: 1.55;
+}
+.nc-tool-block {
+  border-left: 3px solid #d99a35;
+  background: color-mix(in srgb, #d99a35 11%, var(--background-primary));
+}
+.nc-tool-block summary { color: #d99a35; font-weight: 650; }
+.nc-stream-card {
+  border-left: 3px solid #3aa675;
+  background: color-mix(in srgb, #3aa675 10%, var(--background-primary));
+}
+.nc-confirm-card {
+  border-left: 3px solid #bb6bd9;
+  background: color-mix(in srgb, #bb6bd9 10%, var(--background-primary));
+}
+.nc-skill-flow {
+  border-left: 3px solid #5f8dd3;
+  background: color-mix(in srgb, #5f8dd3 10%, var(--background-primary));
+}
+.nullclaw-output .nc-info {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border-left: 3px solid var(--text-muted);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-muted) 7%, var(--background-primary));
+}
+.nullclaw-output .nc-error {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 8px;
+  border-left: 3px solid var(--text-error);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-error) 10%, var(--background-primary));
+}
+
+@media (max-width: 520px) {
+  .nullclaw-output { padding: 6px 4px 10px; }
+  .nc-message,
+  .nc-stream-card,
+  .nc-tool-block,
+  .nc-confirm-card,
+  .nc-skill-flow,
+  .nc-memory-card { border-radius: 7px; }
+  .nc-message-actions { opacity: .9; }
+  .nc-tool-args,
+  .nc-tool-result,
+  .nc-diff { max-height: 220px; }
+}
