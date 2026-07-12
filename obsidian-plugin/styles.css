@@ -20,7 +20,6 @@
   white-space: pre-wrap;
   word-break: break-word;
   overscroll-behavior: contain;
-  border-bottom: 1px solid var(--background-modifier-border);
 }
 
 .nullclaw-output .nc-line { margin-bottom: 8px; }
@@ -38,7 +37,6 @@
   font-size: 11px;
   color: var(--text-muted);
   background: var(--background-primary);
-  border-top: 1px solid var(--background-modifier-border);
   flex-shrink: 0;
 }
 
@@ -103,8 +101,7 @@ body.is-mobile .nullclaw-status {
 }
 
 /* IME visual shift: move composer into Obsidian mobile bottom chrome only while keyboard is open. */
-body.is-mobile .nullclaw-status,
-body.is-mobile .nullclaw-input-row {
+body.is-mobile .nullclaw-status {
   transform: translateY(var(--nullclaw-ime-shift, 0px));
   transition: transform 120ms ease-out;
   position: relative;
@@ -114,23 +111,105 @@ body.is-mobile .nullclaw-output {
   padding-bottom: calc(12px + var(--nullclaw-ime-shift, 0px));
 }
 
-/* Force IME composer shift on focus. Does not depend on body.is-mobile or visualViewport. */
-.nullclaw-terminal.nullclaw-ime-active .nullclaw-status,
-.nullclaw-terminal.nullclaw-ime-active .nullclaw-input-row {
+
+
+
+
+/* Android IME: measured focus shift; no keyboard-top coordinate assumptions. */
+.nullclaw-terminal.nullclaw-ime-active {
+  overflow: visible !important;
+}
+.nullclaw-terminal.nullclaw-ime-active .nullclaw-status {
   transform: translateY(var(--nullclaw-ime-shift, 0px)) !important;
+  position: relative !important;
+  z-index: 99999 !important;
   transition: transform 80ms linear;
-  position: relative;
-  z-index: 99999;
+  background: var(--background-primary);
 }
 .nullclaw-terminal.nullclaw-ime-active .nullclaw-output {
+  /* Move the output bottom with the composer while preserving scrollability. */
+  margin-bottom: calc(var(--nullclaw-ime-shift, 0px) * -1);
   padding-bottom: calc(12px + var(--nullclaw-ime-shift, 0px));
 }
 
-/* Height-expansion IME mode: output and composer move together. Disable old transform shift. */
-.nullclaw-terminal.nullclaw-ime-active .nullclaw-status,
-.nullclaw-terminal.nullclaw-ime-active .nullclaw-input-row {
-  transform: none !important;
+/* Agent workbench: messages, references, tools and confirmations. */
+.nullclaw-input-wrap {
+  position: relative;
+  min-width: 0;
+  background: var(--background-primary);
+  z-index: 21;
 }
-.nullclaw-terminal.nullclaw-ime-active .nullclaw-output {
-  padding-bottom: 12px !important;
+.nullclaw-refs {
+  display: flex;
+  gap: 5px;
+  overflow-x: auto;
+  padding: 4px 12px 1px;
+}
+.nc-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 220px;
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--background-secondary-alt);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.nc-ref-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nc-ref-chip button { border: 0; padding: 0 2px; background: transparent; color: inherit; }
+.nullclaw-mention-menu {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: calc(100% + 3px);
+  max-height: 220px;
+  overflow-y: auto;
+  z-index: 100010;
+  border-radius: 9px;
+  padding: 4px;
+  background: var(--background-secondary);
+  box-shadow: 0 5px 24px rgba(0,0,0,.26);
+}
+.nc-mention-item { padding: 7px 9px; border-radius: 6px; font-size: 12px; }
+.nc-mention-item.is-selected { background: var(--background-modifier-hover); color: var(--text-accent); }
+.nc-message {
+  max-width: 92%;
+  margin: 7px 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--background-secondary);
+}
+.nc-message-user { margin-left: auto; background: var(--background-secondary-alt); }
+.nc-message-assistant { margin-right: auto; }
+.nc-message-header { margin-bottom: 4px; color: var(--text-muted); font-size: 10px; font-weight: 700; }
+.nc-message-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.nc-message-actions { display: flex; gap: 5px; margin-top: 6px; opacity: .75; }
+.nc-message-actions button { padding: 2px 6px; font-size: 10px; }
+.nc-stream-card, .nc-tool-block {
+  margin: 7px 0;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: var(--background-secondary);
+}
+.nc-stream-card summary, .nc-tool-block summary { color: var(--text-muted); font-size: 11px; cursor: pointer; }
+.nc-tool-args, .nc-tool-result, .nc-diff { max-height: 260px; overflow: auto; white-space: pre-wrap; font-size: 11px; }
+.nc-tool-success summary { color: var(--text-success); }
+.nc-tool-error summary { color: var(--text-error); }
+.nc-confirm-card { margin: 8px 0; padding: 9px; border-radius: 9px; background: var(--background-secondary); }
+.nc-confirm-title { font-weight: 700; margin-bottom: 5px; }
+.nc-diff { padding: 7px; border-radius: 6px; background: var(--code-background); }
+.nc-confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.nc-confirmed { opacity: .75; }
+.nc-cancelled { opacity: .55; }
+
+body.is-mobile .nullclaw-input-wrap {
+  transform: translateY(var(--nullclaw-ime-shift, 0px));
+  transition: transform 120ms ease-out;
+}
+.nullclaw-terminal.nullclaw-ime-active .nullclaw-input-wrap {
+  transform: translateY(var(--nullclaw-ime-shift, 0px)) !important;
+  position: relative !important;
+  z-index: 99999 !important;
 }

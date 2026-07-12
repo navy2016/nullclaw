@@ -503,11 +503,18 @@ var NullclawView = class extends import_obsidian.ItemView {
     this.wasmBytes = null;
     this.running = false;
     this.messages = [];
+    this.sessionId = "current";
+    this.sessionSummary = "";
+    this.mentionItems = [];
+    this.mentionIndex = 0;
+    this.mentionStart = -1;
+    this.responseWasStreamed = false;
     this.mobileClosedComposerGap = 0;
     this.mobileBottomChromeHeight = 0;
     this.imeFocusShift = 0;
     this.closedVisualHeight = 0;
     this.attachedRefs = [];
+    this.attachedSelection = "";
     this.settings = settings;
   }
   getViewType() {
@@ -524,15 +531,44 @@ var NullclawView = class extends import_obsidian.ItemView {
     c.empty();
     c.addClass("nullclaw-terminal");
     this.outputEl = c.createDiv({ cls: "nullclaw-output" });
+    const inputWrap = c.createDiv({ cls: "nullclaw-input-wrap" });
+    this.refsEl = inputWrap.createDiv({ cls: "nullclaw-refs" });
+    this.refsEl.hide();
+    this.mentionEl = inputWrap.createDiv({ cls: "nullclaw-mention-menu" });
+    this.mentionEl.hide();
+    const row = inputWrap.createDiv({ cls: "nullclaw-input-row" });
+    row.createSpan({ cls: "nullclaw-input-prompt", text: "\u276F" });
+    this.inputEl = row.createEl("input", { cls: "nullclaw-input", attr: { type: "text", placeholder: "\u76F4\u63A5\u8F93\u5165\u53D1\u7ED9 AI\uFF1B\u547D\u4EE4\u7528 /help /version /memory list ..." } });
     const st = c.createDiv({ cls: "nullclaw-status" });
     this.statusDot = st.createSpan({ cls: "nc-dot nc-dot-error" });
     this.statusText = st.createSpan({ text: "Loading nullclaw.wasm..." });
-    const row = c.createDiv({ cls: "nullclaw-input-row" });
-    row.createSpan({ cls: "nullclaw-input-prompt", text: "\u276F" });
-    this.inputEl = row.createEl("input", { cls: "nullclaw-input", attr: { type: "text", placeholder: "\u76F4\u63A5\u8F93\u5165\u53D1\u7ED9 AI\uFF1B\u547D\u4EE4\u7528 /help /version /memory list ..." } });
     await this.loadWasm();
+    await this.restoreSession();
+    this.inputEl.addEventListener("input", () => this.updateMentionMenu());
     this.inputEl.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !this.running) this.exec(this.inputEl.value);
+      if (!this.mentionEl.isShown()) {
+        if (e.key === "Enter" && !this.running) this.exec(this.inputEl.value);
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        this.moveMention(1);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        this.moveMention(-1);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        this.closeMentionMenu();
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        this.chooseMention(this.mentionIndex);
+      }
     });
     this.setupMobileViewport(c);
     this.setupFileDropAndPaste(c);
@@ -570,7 +606,7 @@ var NullclawView = class extends import_obsidian.ItemView {
     this.running = true;
     this.statusDot.className = "nc-dot nc-dot-running";
     this.statusText.textContent = "Running...";
-    this.println(`\u276F ${raw}`, "nc-prompt", true);
+    this.renderMessageCard("user", raw, true);
     this.inputEl.value = "";
     this.inputEl.disabled = true;
     try {
@@ -586,19 +622,25 @@ var NullclawView = class extends import_obsidian.ItemView {
       this.statusDot.className = "nc-dot nc-dot-ready";
       this.statusText.textContent = "Ready";
       this.inputEl.disabled = false;
+      await this.saveSession();
     }
   }
   async execSlashCommand(command) {
     if (!command) {
-      this.println("Slash commands: /help /version /status /compact /digest-current /review-inbox /apply-memory /vault-doctor /feedback good|bad <text> /read /write /append /insert /search /list /clear", "nc-info");
+      this.println("Slash commands: /help /version /status /compact /digest-current /review-inbox /apply-memory /vault-doctor /feedback good|bad <text> /current /selection /read /write /append /insert /search /list /clear", "nc-info");
       return;
     }
     const args = this.parseArgs(command);
     const cmd = args[0];
     if (cmd === "clear") {
       this.messages = [];
+      this.sessionSummary = "";
       this.attachedRefs = [];
-      this.println("Context cleared.", "nc-info");
+      this.attachedSelection = "";
+      this.outputEl.empty();
+      this.renderRefs();
+      await this.saveSession();
+      this.println("New empty session started.", "nc-info");
       return;
     }
     if (cmd === "compact") {
@@ -632,6 +674,22 @@ var NullclawView = class extends import_obsidian.ItemView {
       this.println("Memory scaffold initialized.", "nc-output");
       return;
     }
+    if (cmd === "current") {
+      const ctx = this.getActiveMarkdownContext();
+      if (!ctx) return this.println("No active markdown note.", "nc-error");
+      if (!this.attachedRefs.includes(ctx.path)) this.attachedRefs.push(ctx.path);
+      this.renderRefs();
+      await this.saveSession();
+      this.println(`Attached current note: ${ctx.path}`, "nc-info");
+      return;
+    }
+    if (cmd === "selection") {
+      const ctx = this.getActiveMarkdownContext();
+      if (!ctx?.selection) return this.println("No active selection.", "nc-error");
+      this.attachedSelection = ctx.selection.slice(0, 16e3);
+      this.println(`Attached current selection (${this.attachedSelection.length} chars).`, "nc-info");
+      return;
+    }
     if (cmd === "read") {
       if (!args[1]) return this.println("Usage: /read <path>", "nc-error");
       this.println(await this.toolRead(args[1]), "nc-output");
@@ -639,20 +697,29 @@ var NullclawView = class extends import_obsidian.ItemView {
     }
     if (cmd === "write") {
       if (!args[1] || args.length < 3) return this.println("Usage: /write <path> <content>", "nc-error");
-      await this.toolWrite(args[1], args.slice(2).join(" "));
-      this.println(`Wrote ${args[1]}`, "nc-output");
+      const content = args.slice(2).join(" ");
+      if (await this.confirmMutation("Write", args[1], content)) {
+        await this.toolWrite(args[1], content);
+        this.println(`Wrote ${args[1]}`, "nc-output");
+      }
       return;
     }
     if (cmd === "append") {
       if (!args[1] || args.length < 3) return this.println("Usage: /append <path> <content>", "nc-error");
-      await this.toolAppend(args[1], args.slice(2).join(" "));
-      this.println(`Appended to ${args[1]}`, "nc-output");
+      const content = args.slice(2).join(" ");
+      if (await this.confirmMutation("Append", args[1], content)) {
+        await this.toolAppend(args[1], content);
+        this.println(`Appended to ${args[1]}`, "nc-output");
+      }
       return;
     }
     if (cmd === "insert") {
       if (!args[1] || !args[2] || args.length < 4) return this.println("Usage: /insert <path> <marker> <content>", "nc-error");
-      await this.toolInsert(args[1], args[2], args.slice(3).join(" "));
-      this.println(`Inserted into ${args[1]}`, "nc-output");
+      const content = args.slice(3).join(" ");
+      if (await this.confirmMutation("Insert", args[1], content, args[2])) {
+        await this.toolInsert(args[1], args[2], content);
+        this.println(`Inserted into ${args[1]}`, "nc-output");
+      }
       return;
     }
     if (cmd === "search") {
@@ -692,7 +759,7 @@ var NullclawView = class extends import_obsidian.ItemView {
     if (this.settings.apiKey) {
       const reply = await this.callLLM(message);
       if (reply) {
-        await this.streamPrint(reply, "nc-output", true);
+        if (!this.responseWasStreamed) this.renderMessageCard("assistant", reply, true);
         return;
       }
       this.println("[LLM call failed, falling back to local mode]", "nc-info");
@@ -703,11 +770,16 @@ var NullclawView = class extends import_obsidian.ItemView {
       this.settings,
       (text) => this.println(text, "nc-info")
     );
-    if (result.stdout) await this.streamPrint(result.stdout, "nc-output", true);
-    if (result.stderr) await this.streamPrint(result.stderr, "nc-error", true);
+    if (result.stdout) {
+      const reply = result.stdout.trim();
+      this.renderMessageCard("assistant", reply, true);
+      this.remember(message, reply);
+    }
+    if (result.stderr) this.println(result.stderr, "nc-error");
     if (!result.stdout && !result.stderr) this.println(`(exit: ${result.exitCode})`, "nc-info");
   }
   async callLLM(message) {
+    this.responseWasStreamed = false;
     const base = (this.settings.apiBase || "https://api.openai.com/v1").replace(/\/$/, "");
     const system = {
       role: "system",
@@ -716,13 +788,14 @@ var NullclawView = class extends import_obsidian.ItemView {
     await this.ensureMemoryScaffold();
     const palaceContext = await this.loadPalaceContext(message);
     const refContext = await this.resolveMessageReferences(message);
-    const enriched = [palaceContext, refContext, `User message:
+    const enriched = [this.sessionSummary ? `Compressed session context:
+${this.sessionSummary}` : "", palaceContext, refContext, `User message:
 ${message}`].filter(Boolean).join("\n\n---\n\n");
     const history = this.messages.slice(-20);
     const requestMessages = [system, ...history, { role: "user", content: enriched }];
     const tools = this.toolSchemas();
     try {
-      const first = await this.chatCompletion(base, requestMessages, tools);
+      const first = await this.chatCompletionStreaming(base, requestMessages, tools);
       const msg = first.choices?.[0]?.message;
       if (!msg) return null;
       if (msg.tool_calls?.length) {
@@ -744,7 +817,7 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
             content: result
           });
         }
-        const second = await this.chatCompletion(base, toolMessages, tools);
+        const second = await this.chatCompletionStreaming(base, toolMessages, tools);
         const finalText = second.choices?.[0]?.message?.content ?? "";
         this.remember(message, finalText);
         return finalText || null;
@@ -755,6 +828,78 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
     } catch (e) {
       this.println(`[LLM fetch failed] ${e.message}`, "nc-error");
       return null;
+    }
+  }
+  async chatCompletionStreaming(base, messages, tools) {
+    const body = {
+      model: this.settings.model || "gpt-4o-mini",
+      messages,
+      max_tokens: 2048,
+      temperature: 0.7,
+      stream: true
+    };
+    if (tools.length) body.tools = tools;
+    let card = null;
+    let content = "";
+    const toolCalls = [];
+    try {
+      const response = await fetch(`${base}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.settings.apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "app://obsidian-nullclaw",
+          "X-Title": "NullClaw Obsidian"
+        },
+        body: JSON.stringify(body)
+      });
+      if (!response.ok || !response.body) throw new Error(`stream HTTP ${response.status}`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          let event;
+          try {
+            event = JSON.parse(payload);
+          } catch {
+            continue;
+          }
+          const delta = event.choices?.[0]?.delta ?? {};
+          if (delta.content) {
+            content += delta.content;
+            if (!card) card = this.createStreamingCard();
+            card.body.textContent = content;
+            if (this.isNearBottom(160)) this.stickToBottom();
+          }
+          for (const tc of delta.tool_calls ?? []) {
+            const i = tc.index ?? 0;
+            toolCalls[i] ?? (toolCalls[i] = { id: "", type: "function", function: { name: "", arguments: "" } });
+            if (tc.id) toolCalls[i].id = tc.id;
+            if (tc.function?.name) toolCalls[i].function.name += tc.function.name;
+            if (tc.function?.arguments) toolCalls[i].function.arguments += tc.function.arguments;
+          }
+        }
+      }
+      if (card) {
+        card.details.open = true;
+        card.body.classList.add("nc-stream-complete");
+        this.responseWasStreamed = true;
+      }
+      return { choices: [{ message: { role: "assistant", content, tool_calls: toolCalls.length ? toolCalls : void 0 } }] };
+    } catch (error) {
+      if (card) card.details.remove();
+      this.responseWasStreamed = false;
+      this.println("Streaming unavailable; using mobile compatibility mode.", "nc-info");
+      return await this.chatCompletion(base, messages, tools);
     }
   }
   async chatCompletion(base, messages, tools) {
@@ -786,9 +931,11 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
     this.messages.push({ role: "user", content: user });
     this.messages.push({ role: "assistant", content: assistant });
     if (this.messages.length > 40) this.messages = this.messages.slice(-40);
+    void this.saveSession();
   }
   toolSchemas() {
     return [
+      { type: "function", function: { name: "vault_current_context", description: "Read the currently active Obsidian markdown note and current selection.", parameters: { type: "object", properties: {} } } },
       { type: "function", function: { name: "vault_search", description: "Search markdown files in the Obsidian vault.", parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } }, required: ["query"] } } },
       { type: "function", function: { name: "vault_read", description: "Read a file from the Obsidian vault.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
       { type: "function", function: { name: "vault_write", description: "Overwrite/create a file in the Obsidian vault.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
@@ -798,25 +945,54 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
     ];
   }
   async executeTool(name, args) {
+    const block = this.createToolBlock(name, args);
     try {
-      if (name === "vault_search") return await this.toolSearch(String(args.query ?? ""), Number(args.limit ?? 20));
-      if (name === "vault_read") return await this.toolRead(String(args.path ?? ""));
-      if (name === "vault_write") {
-        await this.toolWrite(String(args.path ?? ""), String(args.content ?? ""));
-        return `Wrote ${args.path}`;
-      }
-      if (name === "vault_append") {
-        await this.toolAppend(String(args.path ?? ""), String(args.content ?? ""));
-        return `Appended to ${args.path}`;
-      }
-      if (name === "vault_insert") {
-        await this.toolInsert(String(args.path ?? ""), String(args.marker ?? ""), String(args.content ?? ""), String(args.position ?? "after"));
-        return `Inserted into ${args.path}`;
-      }
-      if (name === "vault_list") return await this.toolList(String(args.folder ?? ""), Number(args.limit ?? 100));
-      return `Unknown tool: ${name}`;
+      let result = "";
+      if (name === "vault_current_context") {
+        const ctx = this.getActiveMarkdownContext();
+        result = ctx ? `Path: ${ctx.path}
+Selection:
+${ctx.selection}
+
+Note:
+${ctx.text.slice(0, 24e3)}` : "No active markdown note.";
+      } else if (name === "vault_search") result = await this.toolSearch(String(args.query ?? ""), Number(args.limit ?? 20));
+      else if (name === "vault_read") result = await this.toolRead(String(args.path ?? ""));
+      else if (name === "vault_list") result = await this.toolList(String(args.folder ?? ""), Number(args.limit ?? 100));
+      else if (name === "vault_write") {
+        const path = String(args.path ?? "");
+        const content = String(args.content ?? "");
+        if (!await this.confirmMutation("Write", path, content)) result = "User cancelled write.";
+        else {
+          await this.toolWrite(path, content);
+          result = `Wrote ${path}`;
+        }
+      } else if (name === "vault_append") {
+        const path = String(args.path ?? "");
+        const content = String(args.content ?? "");
+        if (!await this.confirmMutation("Append", path, content)) result = "User cancelled append.";
+        else {
+          await this.toolAppend(path, content);
+          result = `Appended to ${path}`;
+        }
+      } else if (name === "vault_insert") {
+        const path = String(args.path ?? "");
+        const content = String(args.content ?? "");
+        const marker = String(args.marker ?? "");
+        if (!await this.confirmMutation("Insert", path, content, marker)) result = "User cancelled insert.";
+        else {
+          await this.toolInsert(path, marker, content, String(args.position ?? "after"));
+          result = `Inserted into ${path}`;
+        }
+      } else result = `Unknown tool: ${name}`;
+      block.result.textContent = result.slice(0, 12e3);
+      block.details.classList.add("nc-tool-success");
+      return result;
     } catch (e) {
-      return `Tool error (${name}): ${e.message}`;
+      const result = `Tool error (${name}): ${e.message}`;
+      block.result.textContent = result;
+      block.details.classList.add("nc-tool-error");
+      return result;
     }
   }
   normalizePath(path) {
@@ -883,48 +1059,53 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
   }
   setupMobileViewport(container) {
     let imeActive = false;
-    const setAncestorOverflow = (visible) => {
+    let closedVisualHeight = 0;
+    let keyboardWasShrunk = false;
+    let shift = 0;
+    const currentVisualHeight = () => window.visualViewport?.height ?? window.innerHeight;
+    const relaxAncestorOverflow = () => {
       let node = container;
       for (let i = 0; node && i < 8; i++, node = node.parentElement) {
-        if (visible) node.style.overflow = "visible";
+        node.style.overflow = "visible";
       }
     };
-    const currentVisualHeight = () => window.visualViewport?.height ?? window.innerHeight;
-    const measureClosedShift = () => {
+    const measureShift = () => {
       const inputRow = this.inputEl?.parentElement;
       if (!inputRow) return 0;
-      const inputRect = inputRow.getBoundingClientRect();
-      const rawGap = Math.max(0, window.innerHeight - inputRect.bottom - 4);
-      return Math.max(0, rawGap - inputRect.height - 8);
+      const r = inputRow.getBoundingClientRect();
+      const gapBelow = Math.max(0, window.innerHeight - r.bottom - 4);
+      return Math.max(0, gapBelow - r.height * 0.6 - 15);
     };
     const apply = () => {
       const rect = container.getBoundingClientRect();
       const parent = container.parentElement;
       const paneBottom = parent ? parent.getBoundingClientRect().bottom : rect.bottom;
-      const statusHeight = this.statusText?.parentElement?.getBoundingClientRect().height ?? 22;
-      const inputHeight = this.inputEl?.parentElement?.getBoundingClientRect().height ?? 48;
-      const composerHeight = statusHeight + inputHeight;
-      container.style.setProperty("--nullclaw-composer-height", `${composerHeight}px`);
-      if (imeActive && this.closedVisualHeight > 0 && currentVisualHeight() >= this.closedVisualHeight - 36) {
-        deactivateImeShift();
-      }
-      const baseAvailable = Math.max(220, paneBottom - rect.top);
-      const available = baseAvailable + (imeActive ? this.imeFocusShift : 0);
+      const available = Math.max(220, paneBottom - rect.top);
       container.style.setProperty("--nullclaw-view-height", `${available}px`);
-      container.style.setProperty("--nullclaw-ime-shift", `${imeActive ? this.imeFocusShift : 0}px`);
+      container.style.setProperty("--nullclaw-ime-shift", `${imeActive ? shift : 0}px`);
       container.style.height = `${available}px`;
       container.style.maxHeight = `${available}px`;
-      if (parent) {
-        parent.style.height = `${available}px`;
-        parent.style.maxHeight = `${available}px`;
+      const statusEl = this.statusText?.parentElement;
+      const inputRow = this.inputEl?.parentElement;
+      const inputWrap = inputRow?.parentElement;
+      const transform = imeActive ? `translateY(${shift}px)` : "";
+      if (statusEl) statusEl.style.setProperty("transform", transform, "important");
+      if (inputWrap) inputWrap.style.setProperty("transform", transform, "important");
+      const vh = currentVisualHeight();
+      if (imeActive && closedVisualHeight > 0 && vh < closedVisualHeight - 100) {
+        keyboardWasShrunk = true;
+      }
+      if (imeActive && keyboardWasShrunk && vh >= closedVisualHeight - 36) {
+        deactivateIme();
       }
     };
-    const activateImeShift = () => {
-      this.closedVisualHeight = currentVisualHeight();
-      this.imeFocusShift = measureClosedShift();
+    const activateIme = () => {
+      closedVisualHeight = currentVisualHeight();
+      keyboardWasShrunk = false;
+      shift = measureShift();
       imeActive = true;
       container.addClass("nullclaw-ime-active");
-      setAncestorOverflow(true);
+      relaxAncestorOverflow();
       apply();
       setTimeout(() => {
         if (imeActive) apply();
@@ -933,23 +1114,30 @@ ${message}`].filter(Boolean).join("\n\n---\n\n");
         if (imeActive) apply();
       }, 260);
     };
-    const deactivateImeShift = () => {
+    const deactivateIme = () => {
       imeActive = false;
+      keyboardWasShrunk = false;
+      shift = 0;
       container.removeClass("nullclaw-ime-active");
       container.style.setProperty("--nullclaw-ime-shift", "0px");
+      const statusEl = this.statusText?.parentElement;
+      const inputRow = this.inputEl?.parentElement;
+      const inputWrap = inputRow?.parentElement;
+      if (statusEl) statusEl.style.removeProperty("transform");
+      if (inputWrap) inputWrap.style.removeProperty("transform");
       setTimeout(apply, 50);
     };
     this.viewportResizeHandler = apply;
     window.visualViewport?.addEventListener("resize", apply);
     window.visualViewport?.addEventListener("scroll", apply);
     window.addEventListener("resize", apply);
-    this.inputEl.addEventListener("focus", activateImeShift);
-    this.inputEl.addEventListener("blur", deactivateImeShift);
+    this.inputEl.addEventListener("focus", activateIme);
+    this.inputEl.addEventListener("blur", deactivateIme);
     setTimeout(apply, 50);
     setTimeout(apply, 300);
   }
   async ensureMemoryScaffold() {
-    const dirs = ["raw", "sources", "memory", "memory/inbox", "memory/feedback", "people", "projects", "wiki", "decisions", "daily", "palace"];
+    const dirs = ["raw", "sources", "memory", "memory/inbox", "memory/feedback", "people", "projects", "wiki", "decisions", "daily", "palace", ".nullclaw", ".nullclaw/sessions", ".nullclaw/skills"];
     for (const d of dirs) if (!await this.app.vault.adapter.exists(d)) await this.app.vault.adapter.mkdir(d);
     const defaults = {
       "profile.md": "# Profile\n\n\u7528\u6237\u753B\u50CF\uFF0C\u5F85\u6C89\u6DC0\u3002\n",
@@ -988,6 +1176,8 @@ ${chunks.join("\n\n")}` : "";
     }
     for (const r of this.attachedRefs) refs.add(r);
     const chunks = [];
+    if (this.attachedSelection) chunks.push(`Current editor selection:
+${this.attachedSelection}`);
     for (const ref of refs) {
       try {
         if (await this.app.vault.adapter.exists(ref)) chunks.push(`Referenced note: ${ref}
@@ -1018,6 +1208,8 @@ ${chunks.join("\n\n")}` : "";
   async skillCompact() {
     if (!this.settings.apiKey) {
       this.messages = this.messages.slice(-8);
+      this.sessionSummary = this.messages.map((m) => `${m.role}: ${m.content}`).join("\n").slice(-12e3);
+      await this.saveSession();
       this.println("Context compacted locally: kept last 8 messages.", "nc-output");
       return;
     }
@@ -1026,9 +1218,10 @@ ${chunks.join("\n\n")}` : "";
 
 ${text}`);
     if (summary) {
-      this.messages = [{ role: "system", content: `Compressed context:
-${summary}` }];
-      this.println("Context compacted.\n" + summary, "nc-output");
+      this.sessionSummary = summary;
+      this.messages = [];
+      await this.saveSession();
+      this.println("Context compacted and persisted.\n" + summary, "nc-output");
     }
   }
   async skillDigestCurrent() {
@@ -1154,7 +1347,8 @@ ${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
         const buf = await file.arrayBuffer();
         await this.app.vault.adapter.writeBinary(path, buf);
         this.attachedRefs.push(path);
-        this.inputEl.value = (this.inputEl.value + ` @${path}`).trim();
+        this.renderRefs();
+        void this.saveSession();
         this.println(`Saved attachment to ${path}`, "nc-info");
       }
     };
@@ -1168,6 +1362,202 @@ ${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
     this.inputEl.addEventListener("paste", async (e) => {
       if (e.clipboardData?.files?.length) await saveFiles(e.clipboardData.files);
     });
+  }
+  sessionPath() {
+    return `.nullclaw/sessions/${this.sessionId}.json`;
+  }
+  async restoreSession() {
+    await this.ensureMemoryScaffold();
+    const path = this.sessionPath();
+    if (!await this.app.vault.adapter.exists(path)) return;
+    try {
+      const data = JSON.parse(await this.app.vault.adapter.read(path));
+      this.messages = Array.isArray(data.messages) ? data.messages : [];
+      this.sessionSummary = data.summary || "";
+      this.attachedRefs = Array.isArray(data.refs) ? data.refs : [];
+      if (this.messages.length) {
+        this.outputEl.empty();
+        this.println(`Restored session: ${data.title || "Current session"}`, "nc-info");
+        for (const m of this.messages) {
+          if (m.role === "user" || m.role === "assistant") this.renderMessageCard(m.role, m.content, false);
+        }
+      }
+      this.renderRefs();
+      this.stickToBottom();
+    } catch (e) {
+      this.println(`Session restore failed: ${e.message}`, "nc-error");
+    }
+  }
+  async saveSession() {
+    try {
+      await this.ensureMemoryScaffold();
+      const firstUser = this.messages.find((m) => m.role === "user")?.content || "Current session";
+      const data = {
+        version: 1,
+        id: this.sessionId,
+        title: firstUser.replace(/\s+/g, " ").slice(0, 48),
+        summary: this.sessionSummary,
+        messages: this.messages.slice(-80),
+        refs: [...this.attachedRefs],
+        updatedAt: Date.now()
+      };
+      await this.app.vault.adapter.write(this.sessionPath(), JSON.stringify(data, null, 2));
+    } catch (e) {
+      console.warn("NullClaw session save failed", e);
+    }
+  }
+  renderMessageCard(role, text, forceStick) {
+    const shouldStick = forceStick || this.isNearBottom();
+    const card = this.outputEl.createDiv({ cls: `nc-message nc-message-${role}` });
+    const header = card.createDiv({ cls: "nc-message-header" });
+    header.createSpan({ text: role === "user" ? "You" : "NullClaw" });
+    const body = card.createDiv({ cls: "nc-message-body" });
+    body.textContent = text;
+    if (role === "assistant") {
+      const actions = card.createDiv({ cls: "nc-message-actions" });
+      const copy = actions.createEl("button", { text: "Copy" });
+      copy.addEventListener("click", () => navigator.clipboard?.writeText(text));
+      const good = actions.createEl("button", { text: "\u{1F44D}" });
+      good.addEventListener("click", () => void this.writeFeedback("good", text.slice(0, 1e3)));
+      const bad = actions.createEl("button", { text: "\u{1F44E}" });
+      bad.addEventListener("click", () => void this.writeFeedback("bad", text.slice(0, 1e3)));
+    }
+    if (shouldStick) this.stickToBottom();
+    return body;
+  }
+  createStreamingCard() {
+    const details = this.outputEl.createEl("details", { cls: "nc-stream-card" });
+    details.open = true;
+    details.createEl("summary", { text: "NullClaw \xB7 streaming" });
+    const body = details.createDiv({ cls: "nc-message-body nc-stream-body" });
+    return { details, body };
+  }
+  createToolBlock(name, args) {
+    const details = this.outputEl.createEl("details", { cls: "nc-tool-block" });
+    details.createEl("summary", { text: `Tool \xB7 ${name}` });
+    details.createEl("pre", { cls: "nc-tool-args", text: JSON.stringify(args, null, 2) });
+    const result = details.createEl("pre", { cls: "nc-tool-result", text: "Running\u2026" });
+    if (this.isNearBottom()) this.stickToBottom();
+    return { details, result };
+  }
+  async confirmMutation(action, path, content, marker = "") {
+    const p = this.normalizePath(path);
+    let before = "";
+    try {
+      if (await this.app.vault.adapter.exists(p)) before = await this.app.vault.adapter.read(p);
+    } catch {
+    }
+    let after = content;
+    if (action === "Append") after = before + (before && !before.endsWith("\n") ? "\n" : "") + content;
+    if (action === "Insert") {
+      const pos = before.indexOf(marker);
+      after = pos >= 0 ? before.slice(0, pos + marker.length) + content + before.slice(pos + marker.length) : before;
+    }
+    return await new Promise((resolve) => {
+      const card = this.outputEl.createDiv({ cls: "nc-confirm-card" });
+      card.createDiv({ cls: "nc-confirm-title", text: `${action} \xB7 ${p}` });
+      card.createEl("pre", { cls: "nc-diff", text: this.simpleDiff(before, after) });
+      const controls = card.createDiv({ cls: "nc-confirm-actions" });
+      const yes = controls.createEl("button", { cls: "mod-cta", text: "Confirm" });
+      const no = controls.createEl("button", { text: "Cancel" });
+      const finish = (value) => {
+        yes.disabled = true;
+        no.disabled = true;
+        card.addClass(value ? "nc-confirmed" : "nc-cancelled");
+        resolve(value);
+      };
+      yes.addEventListener("click", () => finish(true));
+      no.addEventListener("click", () => finish(false));
+      this.stickToBottom();
+    });
+  }
+  simpleDiff(before, after) {
+    if (!before) return after.split("\n").slice(0, 80).map((x) => `+ ${x}`).join("\n");
+    const a = before.split("\n");
+    const b = after.split("\n");
+    let prefix = 0;
+    while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
+    let suffix = 0;
+    while (suffix < a.length - prefix && suffix < b.length - prefix && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix++;
+    const removed = a.slice(prefix, a.length - suffix).slice(0, 60).map((x) => `- ${x}`);
+    const added = b.slice(prefix, b.length - suffix).slice(0, 60).map((x) => `+ ${x}`);
+    return [`@@ line ${prefix + 1} @@`, ...removed, ...added].join("\n");
+  }
+  updateMentionMenu() {
+    const value = this.inputEl.value;
+    const cursor = this.inputEl.selectionStart ?? value.length;
+    const left = value.slice(0, cursor);
+    const match = left.match(/(?:^|\s)@([^\s@]*)$/);
+    if (!match) {
+      this.closeMentionMenu();
+      return;
+    }
+    this.mentionStart = cursor - match[1].length - 1;
+    const query = match[1].toLowerCase();
+    this.mentionItems = this.app.vault.getMarkdownFiles().map((f) => f.path).filter((path) => !query || path.toLowerCase().includes(query)).sort((a, b) => this.mentionScore(b, query) - this.mentionScore(a, query)).slice(0, 8);
+    if (!this.mentionItems.length) {
+      this.closeMentionMenu();
+      return;
+    }
+    this.mentionIndex = 0;
+    this.renderMentionMenu();
+  }
+  mentionScore(path, query) {
+    const lower = path.toLowerCase();
+    const name = lower.split("/").pop() || lower;
+    if (name.startsWith(query)) return 100;
+    if (name.includes(query)) return 70;
+    if (lower.startsWith(query)) return 50;
+    return 20;
+  }
+  renderMentionMenu() {
+    this.mentionEl.empty();
+    this.mentionEl.show();
+    this.mentionItems.forEach((path, i) => {
+      const item = this.mentionEl.createDiv({ cls: `nc-mention-item${i === this.mentionIndex ? " is-selected" : ""}`, text: path });
+      item.addEventListener("mousedown", (e) => e.preventDefault());
+      item.addEventListener("click", () => this.chooseMention(i));
+    });
+  }
+  moveMention(delta) {
+    if (!this.mentionItems.length) return;
+    this.mentionIndex = (this.mentionIndex + delta + this.mentionItems.length) % this.mentionItems.length;
+    this.renderMentionMenu();
+  }
+  chooseMention(index) {
+    const path = this.mentionItems[index];
+    if (!path) return;
+    if (!this.attachedRefs.includes(path)) this.attachedRefs.push(path);
+    const value = this.inputEl.value;
+    const cursor = this.inputEl.selectionStart ?? value.length;
+    this.inputEl.value = value.slice(0, this.mentionStart) + value.slice(cursor);
+    this.closeMentionMenu();
+    this.renderRefs();
+    void this.saveSession();
+  }
+  closeMentionMenu() {
+    this.mentionEl.hide();
+    this.mentionEl.empty();
+    this.mentionItems = [];
+    this.mentionStart = -1;
+  }
+  renderRefs() {
+    this.refsEl.empty();
+    if (!this.attachedRefs.length) {
+      this.refsEl.hide();
+      return;
+    }
+    this.refsEl.show();
+    for (const path of this.attachedRefs) {
+      const chip = this.refsEl.createSpan({ cls: "nc-ref-chip" });
+      chip.createSpan({ text: `@ ${path}` });
+      const remove = chip.createEl("button", { text: "\xD7" });
+      remove.addEventListener("click", () => {
+        this.attachedRefs = this.attachedRefs.filter((x) => x !== path);
+        this.renderRefs();
+        void this.saveSession();
+      });
+    }
   }
   parseArgs(input) {
     const args = [];
