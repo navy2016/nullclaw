@@ -52,6 +52,7 @@ class NullclawView extends ItemView {
   private settings: NullClawSettings;
   private messages: ChatMessage[] = [];
   private sessionId = 'current';
+  private sessionTitle = 'Current session';
   private sessionSummary = '';
   private refsEl!: HTMLDivElement;
   private mentionEl!: HTMLDivElement;
@@ -1418,53 +1419,76 @@ ${this.attachedSelection}`);
     }
   }
 
-  private async toggleSessionPanel(forceOpen?: boolean) {
-    this.ensureSessionPanelMounted();
-    const open = forceOpen ?? this.sessionEl.hidden;
-    if (!open) { this.sessionEl.hidden = true; this.sessionEl.empty(); return; }
-    this.sessionEl.empty(); this.sessionEl.hidden = false;
-    const head = this.sessionEl.createDiv({ cls: 'nc-session-head' });
-    head.createSpan({ text: 'Sessions' });
-    const create = head.createEl('button', { text: '+ New' }); create.addEventListener('click', () => void this.newSession());
-    const close = head.createEl('button', { text: '×' }); close.addEventListener('click', () => { this.sessionEl.hidden = true; });
-    const search=this.sessionEl.createEl('input',{cls:'nc-session-search',attr:{type:'search',placeholder:'Search sessions…'}});
-    const list=this.sessionEl.createDiv({cls:'nc-session-list'});
-    let items:SessionIndexItem[]=[];
-    try { items=await this.loadSessionIndex(); }
-    catch(e:any) { list.createDiv({cls:'nc-session-empty',text:`Failed to load sessions: ${e.message}`}); return; }
-    const render=(query='')=>{
-      list.empty();const q=query.toLowerCase().trim();
-      for (const item of items.filter(x=>!q||x.title.toLowerCase().includes(q)||x.id.toLowerCase().includes(q))) {
-        const row = list.createDiv({ cls: `nc-session-row${item.id === this.sessionId ? ' is-active' : ''}` });
-        const main = row.createDiv({ cls: 'nc-session-main' });
-        main.createDiv({ cls: 'nc-session-title', text: item.title });
-        main.createDiv({ cls: 'nc-session-meta', text: `${item.messageCount} messages · ${new Date(item.updatedAt).toLocaleString()}` });
-        main.addEventListener('click', () => void this.switchSession(item.id));
-        const more=row.createEl('button',{text:'⋮'});
-        more.addEventListener('click',()=>this.showSessionActions(row,item));
-      }
-      if(!list.children.length)list.createDiv({cls:'nc-session-empty',text:'No sessions.'});
-    };
-    search.addEventListener('input',()=>render(search.value));render();
+  private setSessionPanelStatus(text:string,kind:'info'|'error'='info') {
+    let el=this.sessionEl.querySelector('.nc-session-panel-status') as HTMLElement|null;
+    if(!el)el=this.sessionEl.createDiv({cls:'nc-session-panel-status'});
+    el.className=`nc-session-panel-status is-${kind}`;el.textContent=text;
   }
 
-  private showSessionActions(row:HTMLElement,item:SessionIndexItem) {
-    row.querySelector('.nc-session-actions')?.remove();
-    const actions=row.createDiv({cls:'nc-session-actions'});
-    const rename=actions.createEl('button',{text:'Rename'});
-    const exp=actions.createEl('button',{text:'Export'});
-    const del=actions.createEl('button',{text:'Delete'});
-    rename.addEventListener('click',()=>{
-      actions.empty();const input=actions.createEl('input',{attr:{value:item.title}});const save=actions.createEl('button',{text:'Save'});
-      save.addEventListener('click',()=>void this.renameSession(item.id,input.value));
-    });
-    exp.addEventListener('click',()=>void this.exportSession(item.id));
-    del.addEventListener('click',()=>void this.deleteSession(item.id));
+  private async toggleSessionPanel(forceOpen?: boolean) {
+    this.ensureSessionPanelMounted();
+    const open=forceOpen??this.sessionEl.hidden;
+    if(!open){this.sessionEl.hidden=true;this.sessionEl.empty();return;}
+    this.inputEl.blur(); this.closeMentionMenu(); this.closeSkillMenu();
+    this.sessionEl.hidden=false;await this.renderSessionPanel();
+  }
+
+  private async renderSessionPanel(query='') {
+    this.ensureSessionPanelMounted();this.sessionEl.empty();this.sessionEl.hidden=false;
+    const header=this.sessionEl.createDiv({cls:'nc-session-header'});
+    const title=header.createDiv({cls:'nc-session-heading'});title.createDiv({cls:'nc-session-heading-title',text:'Sessions'});title.createDiv({cls:'nc-session-heading-subtitle',text:'Saved conversations'});
+    const headerActions=header.createDiv({cls:'nc-session-header-actions'});
+    const create=headerActions.createEl('button',{cls:'mod-cta',text:'New'});
+    const close=headerActions.createEl('button',{cls:'nc-session-close',text:'×'});
+    create.addEventListener('click',(e)=>{e.preventDefault();e.stopPropagation();void this.newSession();});
+    close.addEventListener('click',(e)=>{e.preventDefault();e.stopPropagation();this.sessionEl.hidden=true;});
+    const search=this.sessionEl.createEl('input',{cls:'nc-session-search',attr:{type:'search',placeholder:'Search title or ID…'}});search.value=query;
+    const list=this.sessionEl.createDiv({cls:'nc-session-list'});
+    let items:SessionIndexItem[]=[];
+    try{items=await this.loadSessionIndex();}catch(e:any){list.createDiv({cls:'nc-session-empty',text:`Failed to load: ${e.message}`});return;}
+    const draw=(q:string)=>{
+      list.empty();const needle=q.toLowerCase().trim();const filtered=items.filter(x=>!needle||x.title.toLowerCase().includes(needle)||x.id.toLowerCase().includes(needle));
+      for(const item of filtered)this.renderSessionRow(list,item);
+      if(!filtered.length)list.createDiv({cls:'nc-session-empty',text:'No matching sessions.'});
+    };
+    search.addEventListener('input',()=>draw(search.value));draw(query);
+  }
+
+  private renderSessionRow(list:HTMLElement,item:SessionIndexItem) {
+    const row=list.createDiv({cls:`nc-session-row${item.id===this.sessionId?' is-active':''}`});
+    const main=row.createEl('button',{cls:'nc-session-main'});
+    main.createDiv({cls:'nc-session-title',text:item.title});
+    main.createDiv({cls:'nc-session-meta',text:`${item.messageCount} messages · ${new Date(item.updatedAt).toLocaleString()}`});
+    main.addEventListener('click',(e)=>{e.preventDefault();e.stopPropagation();void this.switchSession(item.id).catch(err=>this.setSessionPanelStatus(err.message,'error'));});
+    const actions=row.createDiv({cls:'nc-session-row-actions'});
+    const rename=actions.createEl('button',{attr:{'aria-label':'Rename session'},text:'Rename'});
+    const exp=actions.createEl('button',{attr:{'aria-label':'Export session'},text:'Export'});
+    const del=actions.createEl('button',{cls:'nc-session-delete',attr:{'aria-label':'Delete session'},text:'Delete'});
+    for(const b of [rename,exp,del])b.addEventListener('click',e=>e.stopPropagation());
+    rename.addEventListener('click',()=>this.showInlineRename(row,item));
+    exp.addEventListener('click',()=>void this.exportSession(item.id).then(()=>this.setSessionPanelStatus(`Exported “${item.title}”.`)).catch(e=>this.setSessionPanelStatus(e.message,'error')));
+    del.addEventListener('click',()=>this.showInlineDelete(row,item));
+  }
+
+  private showInlineRename(row:HTMLElement,item:SessionIndexItem) {
+    row.querySelector('.nc-session-inline')?.remove();const box=row.createDiv({cls:'nc-session-inline'});
+    const input=box.createEl('input',{attr:{type:'text'}});input.value=item.title;
+    const save=box.createEl('button',{cls:'mod-cta',text:'Save'});const cancel=box.createEl('button',{text:'Cancel'});
+    save.addEventListener('click',(e)=>{e.stopPropagation();void this.renameSession(item.id,input.value).catch(err=>this.setSessionPanelStatus(err.message,'error'));});
+    cancel.addEventListener('click',(e)=>{e.stopPropagation();box.remove();});
+  }
+
+  private showInlineDelete(row:HTMLElement,item:SessionIndexItem) {
+    row.querySelector('.nc-session-inline')?.remove();const box=row.createDiv({cls:'nc-session-inline is-danger'});
+    box.createSpan({text:`Delete “${item.title}”?`});const yes=box.createEl('button',{cls:'mod-warning',text:'Delete'});const no=box.createEl('button',{text:'Cancel'});
+    yes.addEventListener('click',(e)=>{e.stopPropagation();void this.deleteSessionDirect(item.id).catch(err=>this.setSessionPanelStatus(err.message,'error'));});
+    no.addEventListener('click',(e)=>{e.stopPropagation();box.remove();});
   }
 
   private async newSession(title?: string) {
     await this.saveSession();
     this.sessionId = `session-${Date.now()}`;
+    this.sessionTitle = title?.trim() || 'New session';
     this.messages = []; this.sessionSummary = ''; this.attachedRefs = []; this.attachedSelection = '';
     this.outputEl.empty(); this.ensureSessionPanelMounted(); this.renderRefs();
     if (title) this.messages.push({ role: 'system', content: `Session title: ${title}` });
@@ -1475,7 +1499,7 @@ ${this.attachedSelection}`);
 
   private async switchSession(id: string) {
     await this.saveSession();
-    this.sessionId = id; this.messages = []; this.sessionSummary = ''; this.attachedRefs = []; this.attachedSelection = '';
+    this.sessionId = id; this.sessionTitle = 'Current session'; this.messages = []; this.sessionSummary = ''; this.attachedRefs = []; this.attachedSelection = '';
     this.outputEl.empty(); this.ensureSessionPanelMounted(); this.sessionEl.hidden = true;
     await this.restoreSession();
   }
@@ -1483,8 +1507,8 @@ ${this.attachedSelection}`);
   private async renameSession(id:string,title:string) {
     const path=`.nullclaw/sessions/${id}.json`;if(!(await this.app.vault.adapter.exists(path)))throw new Error(`Session not found: ${id}`);
     const data=JSON.parse(await this.app.vault.adapter.read(path)) as SessionData;data.title=title.trim()||data.title;data.updatedAt=Date.now();await this.toolWrite(path,JSON.stringify(data,null,2));
-    if(id===this.sessionId) this.messages=this.messages.filter(m=>!(m.role==='system'&&m.content.startsWith('Session title:')));
-    this.println(`Renamed session to ${data.title}.`,'nc-info');await this.toggleSessionPanel(true);
+    if(id===this.sessionId)this.sessionTitle=data.title;
+    await this.renderSessionPanel();this.setSessionPanelStatus(`Renamed to “${data.title}”.`);
   }
 
   private async exportSession(id:string) {
@@ -1495,11 +1519,15 @@ ${this.attachedSelection}`);
     await this.toolWrite(out,body);this.println(`Session exported to ${out}`,'nc-output');
   }
 
-  private async deleteSession(id: string) {
-    if (!(await this.confirmOperation('Delete session', id, 'Delete this saved conversation?'))) return;
-    const path = `.nullclaw/sessions/${id}.json`;
-    if (await this.app.vault.adapter.exists(path)) await this.app.vault.adapter.remove(path);
-    if (id === this.sessionId) await this.newSession(); else await this.toggleSessionPanel(true);
+  private async deleteSession(id:string) {
+    if(!(await this.confirmOperation('Delete session',id,'Delete this saved conversation?')))return;
+    await this.deleteSessionDirect(id);
+  }
+
+  private async deleteSessionDirect(id:string) {
+    const path=`.nullclaw/sessions/${id}.json`;if(await this.app.vault.adapter.exists(path))await this.app.vault.adapter.remove(path);
+    if(id===this.sessionId){this.sessionEl.hidden=true;await this.newSession();}
+    else {await this.renderSessionPanel();this.setSessionPanelStatus('Session deleted.');}
   }
 
   private sessionPath(): string {
@@ -1512,6 +1540,7 @@ ${this.attachedSelection}`);
     if (!(await this.app.vault.adapter.exists(path))) return;
     try {
       const data = JSON.parse(await this.app.vault.adapter.read(path)) as SessionData;
+      this.sessionTitle = data.title || 'Current session';
       this.messages = Array.isArray(data.messages) ? data.messages : [];
       this.sessionSummary = data.summary || '';
       this.attachedRefs = Array.isArray(data.refs) ? data.refs : [];
@@ -1533,10 +1562,11 @@ ${this.attachedSelection}`);
     try {
       await this.ensureMemoryScaffold();
       const firstUser = this.messages.find(m => m.role === 'user')?.content || 'Current session';
+      if(!this.sessionTitle || this.sessionTitle==='Current session' || this.sessionTitle==='New session') this.sessionTitle=firstUser.replace(/\s+/g,' ').slice(0,48);
       const data: SessionData = {
         version: 1,
         id: this.sessionId,
-        title: firstUser.replace(/\s+/g, ' ').slice(0, 48),
+        title: this.sessionTitle,
         summary: this.sessionSummary,
         messages: this.messages.slice(-80),
         refs: [...this.attachedRefs],

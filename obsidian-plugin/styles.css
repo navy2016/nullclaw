@@ -214,18 +214,6 @@ body.is-mobile .nullclaw-input-wrap {
   z-index: 99999 !important;
 }
 
-/* Sessions */
-.nc-session-button { margin-left: auto; padding: 1px 7px; font-size: 10px; }
-.nc-session-panel { position: sticky; top: 0; z-index: 1000; margin: -6px -4px 8px; padding: 7px; border-radius: 9px; background: var(--background-secondary); box-shadow: 0 4px 18px rgba(0,0,0,.22); }
-.nc-session-head { display:flex; align-items:center; gap:6px; font-weight:700; }
-.nc-session-head > span { flex:1; }
-.nc-session-row { display:flex; align-items:center; gap:6px; padding:6px; margin-top:4px; border-radius:7px; }
-.nc-session-row:hover,.nc-session-row.is-active { background:var(--background-modifier-hover); }
-.nc-session-main { flex:1; min-width:0; }
-.nc-session-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.nc-session-meta { font-size:10px; color:var(--text-muted); }
-.nc-session-row button { font-size:10px; padding:2px 5px; }
-
 /* Slash skill picker and pill */
 .nullclaw-skill-menu { position:absolute; left:10px; right:10px; bottom:calc(100% + 3px); max-height:260px; overflow:auto; z-index:100011; padding:4px; border-radius:9px; background:var(--background-secondary); box-shadow:0 5px 24px rgba(0,0,0,.26); }
 .nc-skill-item { padding:7px 9px; border-radius:6px; }
@@ -258,18 +246,54 @@ body.is-mobile .nullclaw-input-wrap {
 .nc-memory-card.is-approved { outline:1px solid var(--text-success); opacity:.78; }
 .nc-memory-card.is-rejected { opacity:.48; }
 
-/* Session overlay is mounted outside the scroll output so outputEl.empty() cannot detach it. */
-.nullclaw-terminal { position: relative; }
+
+
+/* Sessions — single mobile-first implementation */
+.nullclaw-terminal { position:relative; }
+.nc-session-button { margin-left:auto; min-height:26px; padding:3px 9px; border-radius:7px; font-size:11px; }
+.nc-session-panel[hidden] { display:none !important; }
 .nc-session-panel {
-  position: absolute;
-  inset: 8px 8px calc(var(--nullclaw-composer-height, 72px) + 16px) 8px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  z-index: 100020;
+  position:absolute;
+  inset:8px 8px 8px 8px;
+  z-index:100020;
+  display:grid;
+  grid-template-rows:auto auto minmax(0,1fr) auto;
+  overflow:hidden;
+  padding:10px;
+  box-sizing:border-box;
+  border:1px solid var(--background-modifier-border);
+  border-radius:12px;
+  background:var(--background-primary);
+  box-shadow:0 10px 36px rgba(0,0,0,.38);
+  color:var(--text-normal);
 }
-.nc-session-search { width:100%; box-sizing:border-box; margin:6px 0; padding:7px 9px; }
-.nc-session-list { overflow-y:auto; min-height:0; }
-.nc-session-actions { display:flex; gap:5px; align-items:center; padding:4px 0 0 8px; }
-.nc-session-actions input { min-width:0; flex:1; }
-.nc-session-empty { color:var(--text-muted); padding:12px; text-align:center; }
+.nc-session-header { display:flex; align-items:center; gap:10px; min-height:38px; }
+.nc-session-heading { flex:1; min-width:0; }
+.nc-session-heading-title { font-size:16px; font-weight:750; }
+.nc-session-heading-subtitle { color:var(--text-muted); font-size:10px; }
+.nc-session-header-actions { display:flex; gap:6px; }
+.nc-session-header-actions button { min-height:32px; padding:5px 10px; }
+.nc-session-close { min-width:34px; font-size:18px; }
+.nc-session-search { width:100%; min-height:36px; box-sizing:border-box; margin:8px 0; padding:7px 10px; border-radius:8px; }
+.nc-session-list { min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:1px 0 8px; }
+.nc-session-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:7px; margin:5px 0; padding:7px; border-radius:10px; background:var(--background-secondary); }
+.nc-session-row.is-active { outline:1px solid var(--interactive-accent); background:var(--background-secondary-alt); }
+.nc-session-main { display:block; min-width:0; min-height:46px; padding:4px 6px; border:0; text-align:left; background:transparent; color:inherit; }
+.nc-session-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:650; }
+.nc-session-meta { margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-muted); font-size:9px; }
+.nc-session-row-actions { display:flex; flex-direction:column; align-items:stretch; gap:3px; }
+.nc-session-row-actions button { min-height:25px; padding:2px 7px; font-size:9px; }
+.nc-session-delete { color:var(--text-error); }
+.nc-session-inline { grid-column:1 / -1; display:flex; align-items:center; gap:6px; padding:7px; border-radius:7px; background:var(--background-primary); }
+.nc-session-inline input { flex:1; min-width:0; min-height:32px; }
+.nc-session-inline.is-danger { color:var(--text-error); }
+.nc-session-inline > span { flex:1; overflow-wrap:anywhere; }
+.nc-session-panel-status { min-height:18px; padding:4px 2px 0; color:var(--text-muted); font-size:10px; }
+.nc-session-panel-status.is-error { color:var(--text-error); }
+.nc-session-empty { color:var(--text-muted); padding:18px 8px; text-align:center; }
+@media (max-width:420px) {
+  .nc-session-panel { inset:5px; padding:8px; }
+  .nc-session-row { grid-template-columns:minmax(0,1fr); }
+  .nc-session-row-actions { display:grid; grid-template-columns:repeat(3,1fr); }
+  .nc-session-row-actions button { min-height:30px; }
+}
