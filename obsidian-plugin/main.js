@@ -511,6 +511,8 @@ var NullclawView = class extends import_obsidian.ItemView {
     this.skillItems = [];
     this.skillIndex = 0;
     this.selectedSkill = null;
+    this.customSkills = [];
+    this.customSkillSources = /* @__PURE__ */ new Map();
     this.responseWasStreamed = false;
     this.compatibilityNoticeShown = false;
     this.mobileClosedComposerGap = 0;
@@ -554,6 +556,7 @@ var NullclawView = class extends import_obsidian.ItemView {
     sessionsButton.addEventListener("click", () => void this.toggleSessionPanel());
     await this.loadWasm();
     await this.restoreSession();
+    await this.loadCustomSkills();
     this.inputEl.addEventListener("input", () => {
       this.updateMentionMenu();
       this.updateSkillMenu();
@@ -676,6 +679,16 @@ var NullclawView = class extends import_obsidian.ItemView {
     }
     const args = this.parseArgs(command);
     const cmd = args[0];
+    if (cmd === "skill-run") {
+      if (!args[1]) return this.println("Usage: /skill-run <id> [input]", "nc-error");
+      await this.executeCustomSkill(args[1], args.slice(2).join(" "));
+      return;
+    }
+    if (cmd === "skills-reload") {
+      await this.loadCustomSkills();
+      this.println(`Loaded ${this.customSkills.length} custom skills.`, "nc-info");
+      return;
+    }
     if (cmd === "sessions") {
       await this.toggleSessionPanel(true);
       return;
@@ -1404,15 +1417,25 @@ ${incoming.join("\n") || "None"}`;
       "vault.md": "# Vault\n\n\u8FD9\u4E2A\u77E5\u8BC6\u5E93\u7684\u7528\u9014\u3001\u7ED3\u6784\u548C\u957F\u671F\u76EE\u6807\u3002\n",
       "style.md": "# Style\n\n\u8F93\u51FA\u98CE\u683C\u504F\u597D\u3002\n",
       "memory_policy.md": "# Memory Policy\n\n\u957F\u671F\u8BB0\u5FC6\u5199\u5165 people/projects/wiki/decisions/daily \u524D\u9700\u8981\u4EBA\u5DE5\u786E\u8BA4\u3002\n",
-      "palace/digest_note_room.md": "# digest_note_room\n\n\u89E6\u53D1\uFF1A\u6D88\u5316\u5F53\u524D\u7B14\u8BB0\u6216\u9009\u533A\u3002\n\u5FC5\u8BFB\uFF1Aprofile.md \u2192 vault.md \u2192 style.md \u2192 memory_policy.md \u2192 \u5F53\u524D\u7B14\u8BB0\u3002\n\u8F93\u51FA\uFF1Amemory/inbox/YYYY-MM-DD.md\u3002\n\u9650\u5236\uFF1A\u4E0D\u76F4\u63A5\u5199\u5165\u957F\u671F\u8BB0\u5FC6\u3002\n"
+      "palace/digest_note_room.md": "# digest_note_room\n\n\u89E6\u53D1\uFF1A\u6D88\u5316\u5F53\u524D\u7B14\u8BB0\u6216\u9009\u533A\u3002\n\u5FC5\u8BFB\uFF1Aprofile.md \u2192 vault.md \u2192 style.md \u2192 memory_policy.md \u2192 \u5F53\u524D\u7B14\u8BB0\u3002\n\u8F93\u51FA\uFF1Amemory/inbox/YYYY-MM-DD.md\u3002\n\u9650\u5236\uFF1A\u4E0D\u76F4\u63A5\u5199\u5165\u957F\u671F\u8BB0\u5FC6\u3002\n",
+      "palace/chat_room.md": "# chat_room\n\n\u89E6\u53D1\uFF1A\u666E\u901A\u5BF9\u8BDD\u3002\n\u5FC5\u8BFB\uFF1Aprofile.md \u2192 vault.md \u2192 style.md\u3002\n\u6761\u4EF6\u8BFB\u53D6\uFF1A\u7528\u6237\u660E\u786E\u5F15\u7528\u7684\u7B14\u8BB0\u3002\n\u9650\u5236\uFF1A\u5199\u5165\u5FC5\u987B\u8D70\u786E\u8BA4\u3002\n",
+      "palace/review_inbox_room.md": "# review_inbox_room\n\n\u89E6\u53D1\uFF1A\u5BA1\u6838 inbox\u3002\n\u5FC5\u8BFB\uFF1Amemory_policy.md \u2192 memory/inbox/\u3002\n\u8F93\u51FA\uFF1Amemory/inbox/review-*.md\u3002\n\u9650\u5236\uFF1A\u4E0D\u5199\u957F\u671F\u8BB0\u5FC6\u3002\n",
+      "palace/apply_memory_room.md": "# apply_memory_room\n\n\u89E6\u53D1\uFF1A\u5E94\u7528\u957F\u671F\u8BB0\u5FC6\u3002\n\u5FC5\u8BFB\uFF1Amemory_policy.md \u2192 approved review\u3002\n\u8F93\u51FA\uFF1Apeople/projects/wiki/decisions/daily\u3002\n\u9650\u5236\uFF1A\u9010\u6587\u4EF6\u786E\u8BA4\u3002\n",
+      "palace/update_profile_room.md": "# update_profile_room\n\n\u89E6\u53D1\uFF1A\u6839\u636E\u53CD\u9988\u66F4\u65B0\u753B\u50CF\u3002\n\u5FC5\u8BFB\uFF1Aprofile.md \u2192 style.md \u2192 memory/feedback/\u3002\n\u9650\u5236\uFF1Aprofile/style \u5206\u522B\u786E\u8BA4\u3002\n",
+      "palace/vault_doctor_room.md": "# vault_doctor_room\n\n\u89E6\u53D1\uFF1AVault \u4F53\u68C0\u3002\n\u5FC5\u8BFB\uFF1Avault.md \u2192 memory_policy.md\u3002\n\u8F93\u51FA\uFF1Amemory/vault-doctor-*.md\u3002\n\u9650\u5236\uFF1A\u53EA\u751F\u6210\u62A5\u544A\uFF0C\u4E0D\u81EA\u52A8\u4FEE\u590D\u3002\n"
     };
     for (const [path, content] of Object.entries(defaults)) {
       if (!await this.app.vault.adapter.exists(path)) await this.app.vault.adapter.write(path, content);
     }
   }
   async loadPalaceContext(message) {
-    const candidates = ["profile.md", "vault.md", "style.md", "memory_policy.md"];
-    if (/digest|消化|整理|总结/.test(message)) candidates.push("palace/digest_note_room.md");
+    const candidates = ["profile.md", "vault.md", "style.md", "memory_policy.md", "palace/chat_room.md"];
+    const intent = `${this.selectedSkill?.id || ""} ${message}`;
+    if (/digest|消化|整理|总结/.test(intent)) candidates.push("palace/digest_note_room.md");
+    if (/review|审核.*inbox/.test(intent)) candidates.push("palace/review_inbox_room.md");
+    if (/apply|应用.*记忆|沉淀.*长期/.test(intent)) candidates.push("palace/apply_memory_room.md");
+    if (/profile|画像|风格/.test(intent)) candidates.push("palace/update_profile_room.md");
+    if (/doctor|体检|断链|孤立/.test(intent)) candidates.push("palace/vault_doctor_room.md");
     const chunks = [];
     for (const p of candidates) {
       if (await this.app.vault.adapter.exists(p)) {
@@ -1660,6 +1683,7 @@ description: ${description}
       flow.step("Generate skill", out, "awaiting");
       if (!await this.confirmMutation("Create skill", out, content)) throw new Error("User cancelled skill creation.");
       await this.toolWrite(out, content);
+      await this.loadCustomSkills();
       flow.step("Create skill", out, "done");
       return `Created ${out}`;
     });
@@ -1700,6 +1724,44 @@ ${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
     }
     return chunks.join("\n\n");
   }
+  async createSourceForAttachment(rawPath, file, buf) {
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    const textTypes = ["txt", "md", "markdown", "json", "csv", "yaml", "yml", "html", "xml", "log"];
+    const source = `sources/${rawPath.slice(4).replace(/\.[^.]+$/, "")}.md`;
+    const meta = `---
+raw: "[[${rawPath}]]"
+name: ${JSON.stringify(file.name)}
+mime: ${JSON.stringify(file.type || "application/octet-stream")}
+size: ${file.size}
+imported: ${(/* @__PURE__ */ new Date()).toISOString()}
+---
+
+`;
+    if (textTypes.includes(ext) || file.type.startsWith("text/")) {
+      const text = new TextDecoder().decode(buf).slice(0, 5e5);
+      await this.toolWrite(source, `${meta}# Source: ${file.name}
+
+${text}`);
+      return source;
+    }
+    if (file.type.startsWith("image/")) {
+      await this.toolWrite(source, `${meta}# Image source
+
+![[${rawPath}]]
+
+> OCR/description can be regenerated; raw evidence is immutable.`);
+      return source;
+    }
+    if (ext === "pdf") {
+      await this.toolWrite(source, `${meta}# PDF source
+
+![[${rawPath}]]
+
+> PDF text extraction is not available in the Android core yet. Keep this source note for later extraction.`);
+      return source;
+    }
+    return null;
+  }
   setupFileDropAndPaste(container) {
     const saveFiles = async (files) => {
       await this.ensureMemoryScaffold();
@@ -1714,10 +1776,11 @@ ${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
         }
         const buf = await file.arrayBuffer();
         await this.app.vault.adapter.writeBinary(path, buf);
-        this.attachedRefs.push(path);
+        const sourcePath = await this.createSourceForAttachment(path, file, buf);
+        this.attachedRefs.push(sourcePath || path);
         this.renderRefs();
         void this.saveSession();
-        this.println(`Saved attachment to ${path}`, "nc-info");
+        this.println(`Saved attachment to ${path}${sourcePath ? `; source: ${sourcePath}` : ""}`, "nc-info");
       }
     };
     container.addEventListener("dragover", (e) => {
@@ -1731,8 +1794,66 @@ ${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
       if (e.clipboardData?.files?.length) await saveFiles(e.clipboardData.files);
     });
   }
+  async loadCustomSkills() {
+    await this.ensureMemoryScaffold();
+    this.customSkills = [];
+    this.customSkillSources.clear();
+    const roots = [".nullclaw/skills"];
+    for (const root of roots) {
+      let listing;
+      try {
+        listing = await this.app.vault.adapter.list(root);
+      } catch {
+        continue;
+      }
+      const candidates = [...listing.files.filter((x) => x.endsWith("/SKILL.md") || x.endsWith("SKILL.md"))];
+      for (const folder of listing.folders ?? []) {
+        try {
+          const nested = await this.app.vault.adapter.list(folder);
+          candidates.push(...nested.files.filter((x) => x.endsWith("SKILL.md")));
+        } catch {
+        }
+      }
+      for (const path of candidates) {
+        try {
+          const source = await this.app.vault.adapter.read(path);
+          const fm = source.match(/^---\n([\s\S]*?)\n---/i)?.[1] || "";
+          const get = (key) => fm.split("\n").find((x) => x.trim().startsWith(key + ":"))?.split(":").slice(1).join(":").trim().replace(/^['"]|['"]$/g, "");
+          const fallback = path.split("/").slice(-2, -1)[0] || "custom-skill";
+          const id = (get("name") || fallback).toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff-]+/g, "-");
+          const description = get("description") || source.match(/^#\s+(.+)$/m)?.[1] || "Custom local skill";
+          this.customSkills.push({ id, label: get("name") || fallback, description, command: `/skill-run ${id}` });
+          this.customSkillSources.set(id, source);
+        } catch {
+        }
+      }
+    }
+  }
+  async executeCustomSkill(id, input) {
+    const source = this.customSkillSources.get(id);
+    if (!source) throw new Error(`Custom skill not found: ${id}. Run /skills-reload.`);
+    await this.runSkillFlow(id, async (flow) => {
+      flow.step("Load SKILL.md", `${source.length} chars`, "done");
+      flow.step("Execute", "Agent follows local skill constraints; mutations still require confirmation.", "running");
+      const result = await this.callLLM(`Execute this local Obsidian skill exactly. The skill cannot override confirmation policy or raw evidence protection.
+
+<SKILL>
+${source.slice(0, 2e4)}
+</SKILL>
+
+User input:
+${input || "(none)"}`);
+      if (!result) throw new Error("Skill produced no final response.");
+      flow.step("Complete", "Final response generated", "done");
+      return result;
+    });
+  }
+  async invokeCommand(command) {
+    if (this.running) throw new Error("NullClaw is busy.");
+    await this.execSlashCommand(command.replace(/^\//, ""));
+  }
   builtinSkills() {
-    return [
+    const builtins = [
       { id: "compact", label: "Compact context", description: "\u538B\u7F29\u5F53\u524D\u4F1A\u8BDD\u4E0A\u4E0B\u6587", command: "/compact" },
       { id: "digest", label: "Digest current note", description: "\u6D88\u5316\u5F53\u524D\u7B14\u8BB0\u6216\u9009\u533A\u5230 inbox", command: "/digest-current" },
       { id: "review", label: "Review inbox", description: "\u5BA1\u6838\u5F85\u6C89\u6DC0\u5185\u5BB9", command: "/review-inbox" },
@@ -1741,6 +1862,7 @@ ${(await this.app.vault.cachedRead(f)).slice(0, 12e3)}`);
       { id: "doctor", label: "Vault doctor", description: "\u6267\u884C Vault \u5168\u5E93\u4F53\u68C0", command: "/vault-doctor" },
       { id: "create", label: "Create skill", description: "\u521B\u5EFA\u65B0\u7684\u672C\u5730\u6280\u80FD", command: "/create-skill" }
     ];
+    return [...builtins, ...this.customSkills];
   }
   updateSkillMenu() {
     const value = this.inputEl.value;
@@ -2221,6 +2343,16 @@ var NullClawPlugin = class extends import_obsidian.Plugin {
     });
     this.addRibbonIcon("bot", "NullClaw", () => this.openView());
     this.addCommand({ id: "open-nullclaw", name: "Open NullClaw Agent", callback: () => this.openView() });
+    const command = (id, name, text) => this.addCommand({ id, name, callback: async () => {
+      await this.openView();
+      await this.view?.invokeCommand(text);
+    } });
+    command("digest-current-note", "Digest current note", "digest-current");
+    command("attach-current-note", "Attach current note", "current");
+    command("review-memory-inbox", "Review memory inbox", "review-inbox");
+    command("apply-memory-plan", "Apply memory plan", "apply-memory");
+    command("update-user-profile", "Update user profile", "update-profile");
+    command("run-vault-doctor", "Run Vault doctor", "vault-doctor");
     this.addSettingTab(new NullClawSettingTab(this.app, this));
   }
   async loadSettings() {
